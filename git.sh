@@ -4,7 +4,7 @@
 if [ -z "$1" ]; then
   commit_message="auto commit: $(date '+%Y-%m-%d %H:%M:%S')"
 else
-  commit_message="$1 --Date: $(date '+%Y-%m-%d %H:%M:%S')"
+  commit_message="$1   Date: $(date '+%Y-%m-%d %H:%M:%S')"
 fi
 
 # 切换到项目目录
