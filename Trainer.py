@@ -539,3 +539,4 @@ if __name__ == "__main__":
         eval_interval=250)
     # trainer.save_colmap(trainer.save_dir, save_image=True)
     trainer.train()
+    print("Training finished.")
