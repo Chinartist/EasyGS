@@ -145,6 +145,8 @@ def readCameras(cam_extrinsics, cam_intrinsics,Height,Width,images,depths, norma
             width, height = image.size
         else:
             raise TypeError("Unsupported image type: {}".format(type(image)))
+        scale_width = 1.0
+        scale_height = 1.0
         if Height is not None and Width is not None:
             scale_height = Height / height
             scale_width = Width / width
