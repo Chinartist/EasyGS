@@ -59,6 +59,8 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics,Height,Width,images_folder=
         intr = cam_intrinsics[extr.camera_id]
         height = intr.height
         width = intr.width
+        scale_height = 1.0
+        scale_width = 1.0
         if Height is not None and Width is not None:
             scale_height = Height / height
             scale_width = Width / width
