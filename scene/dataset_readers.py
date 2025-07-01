@@ -134,13 +134,13 @@ def readCameras(cam_extrinsics, cam_intrinsics,Height,Width,images,depths, norma
             image = Image.open(image)
             width, height = image.size
         elif isinstance(image, np.ndarray):
-            image_name=f"{idx:04d}.png"
+            image_name=f"{idx:06d}.png"
             image_path = image_name
             image = image.astype(np.uint8)
             image = Image.fromarray(image)
             width, height = image.size
         elif isinstance(image, Image.Image):
-            image_name = f"{idx:04d}.png"
+            image_name = f"{idx:06d}.png"
             image_path = image_name
             width, height = image.size
         else:
