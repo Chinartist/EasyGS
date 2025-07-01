@@ -238,7 +238,7 @@ class GSTrainer():
    
         elif w2c is not None and intrinsics is not None and (images is not None or (height is not None and width is not None)) and (xyz is not None or pretrained_path is not None):
             print("Using provided camera parameters.")
-            cam_infos_unsorted = readCameras(w2c, intrinsics, images,depths, normals, alphas, extra_attrs,Height=height, Width=width)
+            cam_infos_unsorted = readCameras(cam_extrinsics=w2c, cam_intrinsics=intrinsics, images=images, depths=depths, normals=normals, alphas=alphas, extra_attrs=extra_attrs, Height=height, Width=width)
             cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
             nerf_normalization = getNerfppNorm(cam_infos)
             if xyz is not None:
