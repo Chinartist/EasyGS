@@ -243,7 +243,7 @@ class GSTrainer():
             nerf_normalization = getNerfppNorm(cam_infos)
             if xyz is not None:
                 if rgb is None:
-                    rgb = torch.ones_like(xyz, dtype=torch.float32)* 0.5
+                    rgb = np.ones_like(xyz, dtype=np.float32)* 0.5
                 if rgb.max() > 1.0:
                     rgb = rgb / 255.0
                 gaussians.create_from_pcd(xyz, rgb, nerf_normalization["radius"])
