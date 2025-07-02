@@ -83,7 +83,10 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics,Height,Width,images_folder=
         endwith = extr.name.split('.')[-1]
         depth = np.load(os.path.join(depths_folder, extr.name.replace(endwith, "npy"))) if depths_folder else None
         normal = np.load(os.path.join(normals_folder, extr.name.replace(endwith, "npy"))) if normals_folder else None
-        alpha = np.load(os.path.join(alphas_folder, extr.name.replace(endwith, "npy"))) if alphas_folder else None
+        try:
+            alpha = np.load(os.path.join(alphas_folder, extr.name.replace(endwith, "npy")))
+        except:
+            alpha = np.array(Image.open(os.path.join(alphas_folder, extr.name.replace(endwith, "png")))) if alphas_folder else None
         extra_attrs = np.load(os.path.join(extra_attrs_folder, extr.name.replace(endwith, "npy"))) if extra_attrs_folder else None
         R = qvec2rotmat(extr.qvec)
         T = np.array(extr.tvec)
