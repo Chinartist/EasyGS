@@ -478,8 +478,8 @@ class GSTrainer():
             intr = np.zeros((3, 3), dtype=np.float32)
             intr[0, 0] = cam.focal_length_x
             intr[1, 1] = cam.focal_length_y
-            intr[0, 2] = cam.image_width
-            intr[1, 2] = cam.image_height
+            intr[0, 2] = int(cam.image_width/2)
+            intr[1, 2] = int(cam.image_height/2)
             intrinsics.append(intr)
             extr = cam.world_view_transform.detach().cpu().transpose(0, 1).numpy()[:3, :4]
             extrinsics.append(extr)
