@@ -172,7 +172,8 @@ class GSTrainer():
                     enable_train_all=True,
                     enable_cam_update=False,
                     
-
+             
+             
                     enable_save_rendered_images=True,
                     enable_save_rendered_depth=False,
                     enable_save_rendered_normals=False,
