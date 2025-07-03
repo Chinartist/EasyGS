@@ -184,7 +184,7 @@ class GSTrainer():
                     eval_rate=1.0,
                     lr_args=LearningRate,
                     loss_weights=LossWeights,
-             
+                 
                     init_degree=0,
                     max_sh_degree=3,
                     bg_color = [1, 1, 1],
