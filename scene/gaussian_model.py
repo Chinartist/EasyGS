@@ -104,7 +104,7 @@ class GaussianModel():
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
 
-    def create_from_pcd(self,xyz,rgb ,spatial_lr_scale : float):
+    def create_from_pcd(self,xyz,rgb ,spatial_lr_scale : float,add_skybox = False):
         self.spatial_lr_scale = spatial_lr_scale
         fused_point_cloud = torch.tensor(np.asarray(xyz)).float().cuda()
         fused_color = RGB2SH(torch.tensor(np.asarray(rgb)).float().cuda())
@@ -120,15 +120,72 @@ class GaussianModel():
         rots[:, 0] = 1
 
         opacities = self.inverse_opacity_activation(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
-
+        features_dc =features[:,:,0:1]
+        features_rest =features[:,:,1:]
+        if add_skybox:
+            fused_point_cloud, features_dc, features_rest, scales, rots, opacities = self.add_skybox(fused_point_cloud, features_dc, features_rest, scales, rots, opacities)
+                       
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
-        self._features_dc = nn.Parameter(features[:,:,0:1].transpose(1, 2).contiguous().requires_grad_(True))
-        self._features_rest = nn.Parameter(features[:,:,1:].transpose(1, 2).contiguous().requires_grad_(True))
+        self._features_dc = nn.Parameter(features_dc.transpose(1, 2).contiguous().requires_grad_(True))
+        self._features_rest = nn.Parameter(features_rest.transpose(1, 2).contiguous().requires_grad_(True))
         self._scaling = nn.Parameter(scales.requires_grad_(True))
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
         self._extra_attrs = nn.Parameter(torch.zeros((fused_point_cloud.shape[0], self._extra_attrs_dim), device="cuda").requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+        
+    def add_skybox(self,xyz,features_dc,features_rest,scales,rots,opacities,skybox_points = 100_000):
+            minimum, _ = torch.min(xyz, axis=0)
+            maximum, _ = torch.max(xyz, axis=0)
+            mean = 0.5 * (minimum + maximum)
+
+            radius = torch.linalg.norm(maximum - mean)
+
+            # xyz
+            theta = (2.0 * torch.pi * torch.rand(skybox_points//2, device="cuda")).float()
+            # phi = (torch.arccos(1.0 - 1.4 * torch.rand(skybox_points, device="cuda"))).float()
+            phi = (torch.arccos(torch.pi * torch.rand(skybox_points//2, device="cuda"))).float()
+            skybox_xyz = torch.zeros((skybox_points, 3))
+            skybox_xyz[:skybox_points//2, 0] = radius * 10 * torch.cos(theta)*torch.sin(phi)
+            skybox_xyz[:skybox_points//2, 1] = radius * 10 * torch.sin(theta)*torch.sin(phi)
+            skybox_xyz[:skybox_points//2, 2] = -radius * 10 * torch.cos(phi)
+            skybox_xyz[skybox_points//2:, 0] = radius * 10 * torch.cos(theta)*torch.sin(phi)
+            skybox_xyz[skybox_points//2:, 1] = radius * 10 * torch.sin(theta)*torch.sin(phi)
+            skybox_xyz[skybox_points//2:, 2] = radius * 10 * torch.cos(phi)
+            skybox_xyz += mean.cpu()
+
+            # sh
+            fused_color = (torch.ones((skybox_points, 3)).cuda())
+            fused_color[:skybox_points,0] *= (205/255)
+            fused_color[:skybox_points,1] *= (218/255)
+            fused_color[:skybox_points,2] *= (226/255)
+
+            features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
+            features[:, :3, 0 ] = RGB2SH(fused_color)
+            features[:, 3:, 1:] = 0.0
+
+            skybox_features_dc = features[:,:,0:1]
+            skybox_features_rest = features[:,:,1:]
+
+            xyz = torch.concat((skybox_xyz.cuda(), xyz))
+
+            # 缩放和旋转
+            dist2 = torch.clamp_min(distCUDA2(xyz), 0.0000001) 
+            skybox_scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)[:skybox_points,...] * 1.5 # 原本的scale太小，导致三三思sky box没有全部遮住，所以* 1.2
+            skybox_rots = torch.zeros((xyz.shape[0], 4), device="cuda")[:skybox_points,...]
+            skybox_rots[:, 0] = 1
+
+            # 不透明度
+            skybox_opacities = self.inverse_opacity_activation(0.02 * torch.ones((skybox_xyz.shape[0], 1), dtype=torch.float, device="cuda"))
+            skybox_opacities[:skybox_points] = 0.7
+
+            # 合并天空盒和背景
+            features_dc = torch.concat((skybox_features_dc.cuda(), features_dc))
+            features_rest = torch.concat((skybox_features_rest.cuda(), features_rest))
+            opacities = torch.concat((skybox_opacities.cuda(), opacities))
+            scales = torch.concat((skybox_scales.cuda(), scales))
+            rots = torch.concat((skybox_rots.cuda(), rots))
+            return xyz, features_dc, features_rest, scales, rots, opacities
     def training_setup(self, lr
                        ):
  

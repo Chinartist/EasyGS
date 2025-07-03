@@ -166,6 +166,7 @@ class GSTrainer():
                     alphas_folder=None,
                     extra_attrs_folder=None,
                     #训练和测试设置
+                    add_skybox=False,
                     enable_densification=True,
                     enable_reset_opacity=True,
                     enable_train_all=True,
@@ -233,7 +234,7 @@ class GSTrainer():
                 xyz, rgb, _ = read_points3D_text(txt_path)
             if rgb.max() > 1.0:
                 rgb = rgb / 255.0
-            gaussians.create_from_pcd(xyz, rgb,  nerf_normalization["radius"])
+            gaussians.create_from_pcd(xyz, rgb,  nerf_normalization["radius"],add_skybox)
             cams = nn.ModuleList(cam_infos)
    
         elif w2c is not None and intrinsics is not None and (images is not None or (height is not None and width is not None)) and (xyz is not None or pretrained_path is not None):
@@ -246,7 +247,7 @@ class GSTrainer():
                     rgb = np.ones_like(xyz, dtype=np.float32)* 0.5
                 if rgb.max() > 1.0:
                     rgb = rgb / 255.0
-                gaussians.create_from_pcd(xyz, rgb, nerf_normalization["radius"])
+                gaussians.create_from_pcd(xyz, rgb, nerf_normalization["radius"],add_skybox)
             cams = nn.ModuleList(cam_infos)
         else:
             raise ValueError("Either colmap_path or w2c, intrinsics, images and (xyz or pretrained_path) must be provided.")
