@@ -301,10 +301,11 @@ class GSTrainer():
         print(f"Model will be saved to {save_dir}")
         #设置gs优化器
         gaussians.training_setup(lr_args)
-        lr_skyboxer = {k:v for k,v in lr_args.items()}
-        lr_skyboxer["rotation_lr"] = 0.0
-        lr_skyboxer["scaling_lr"] = 0.0
-        gaussians.skyboxer.training_setup(lr_skyboxer)
+        if gaussians.skyboxer is not None:
+            lr_skyboxer = {k:v for k,v in lr_args.items()}
+            lr_skyboxer["rotation_lr"] = 0.0
+            lr_skyboxer["scaling_lr"] = 0.0
+            gaussians.skyboxer.training_setup(lr_skyboxer)
 
         #初始化参数
         self.gaussians = gaussians
