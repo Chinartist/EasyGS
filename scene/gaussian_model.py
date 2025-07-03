@@ -42,7 +42,7 @@ class GaussianModel():
         self.rotation_activation = torch.nn.functional.normalize
 
 
-    def __init__(self,init_sh_dgree, max_sh_degree,extra_attrs_dim=0):
+    def __init__(self,init_sh_dgree, max_sh_degree,extra_attrs_dim=0,max_scale=None):
         assert init_sh_dgree <= max_sh_degree, "Initial SH degree must be less than or equal to the maximum SH degree."
         self.active_sh_degree = init_sh_dgree
         self.max_sh_degree = max_sh_degree  
@@ -57,61 +57,84 @@ class GaussianModel():
         self.denom = torch.empty(0)
         self.optimizer = None
         self._extra_attrs_dim = extra_attrs_dim
+        self.max_scale = max_scale
         self.percent_dense = 0.01
         self.spatial_lr_scale = 0
+        self.skyboxer = None
         self.setup_functions()
     @property
     def get_scaling(self):
+        if self.skyboxer is not None:
+            return torch.cat([self.skyboxer.get_scaling, self.scaling_activation(self._scaling)], dim=0)
         return self.scaling_activation(self._scaling)
     
     @property
     def get_rotation(self):
+        if self.skyboxer is not None:
+            return torch.cat([self.skyboxer.get_rotation, self.rotation_activation(self._rotation)], dim=0)
         return self.rotation_activation(self._rotation)
     
     @property
     def get_xyz(self):
+        if self.skyboxer is not None:
+            return torch.cat([self.skyboxer.get_xyz, self._xyz], dim=0)
         return self._xyz
     
     @property
     def get_extra_attrs(self):
-        if self._extra_attrs_dim > 0:
-            return self._extra_attrs
-        else:
-            return None
+        if self.skyboxer is not None:
+            return torch.cat([self.skyboxer.get_extra_attrs, self._extra_attrs], dim=0)
+       
+        return self._extra_attrs
+       
 
     @property
     def get_features(self):
+        if self.skyboxer is not None:
+            features_dc = torch.cat((self.skyboxer._features_dc, self._features_dc), dim=0)
+            features_rest = torch.cat((self.skyboxer._features_rest, self._features_rest), dim=0)
+            return torch.cat([features_dc, features_rest], dim=1)
         features_dc = self._features_dc
         features_rest = self._features_rest
         return torch.cat((features_dc, features_rest), dim=1)
     
     @property
     def get_features_dc(self):
+        if self.skyboxer is not None:
+            return torch.cat([self.skyboxer._features_dc, self._features_dc], dim=0)
         return self._features_dc
     
     @property
     def get_features_rest(self):
+        if self.skyboxer is not None:
+            return torch.cat([self.skyboxer._features_rest, self._features_rest], dim=0)
         return self._features_rest
     
     @property
     def get_opacity(self):
+        if self.skyboxer is not None:
+            return torch.cat([self.skyboxer.get_opacity, self.opacity_activation(self._opacity)], dim=0)
         return self.opacity_activation(self._opacity)
     
     def get_covariance(self, scaling_modifier = 1):
+        if self.skyboxer is not None:
+            scaling = torch.cat([self.skyboxer.get_scaling, self.get_scaling], dim=0)
+            rotation = torch.cat([self.skyboxer._rotation, self._rotation], dim=0)
+            return self.covariance_activation(scaling, scaling_modifier, rotation)
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
 
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
 
-    def create_from_pcd(self,xyz,rgb ,spatial_lr_scale : float,add_skybox = False):
+    def create_from_pcd(self,xyz,rgb ,spatial_lr_scale : float,add_skybox = False,skybox_points = 100_000,skybox_radius_scale=2.0):
         self.spatial_lr_scale = spatial_lr_scale
         fused_point_cloud = torch.tensor(np.asarray(xyz)).float().cuda()
         fused_color = RGB2SH(torch.tensor(np.asarray(rgb)).float().cuda())
         features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
         features[:, :3, 0 ] = fused_color
         features[:, 3:, 1:] = 0.0
-
+     
         print("Number of points at initialisation : ", fused_point_cloud.shape[0])
 
         dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(xyz)).float().cuda()), 0.0000001)
@@ -123,7 +146,7 @@ class GaussianModel():
         features_dc =features[:,:,0:1]
         features_rest =features[:,:,1:]
         if add_skybox:
-            fused_point_cloud, features_dc, features_rest, scales, rots, opacities = self.add_skybox(fused_point_cloud, features_dc, features_rest, scales, rots, opacities)
+            self.add_skybox(fused_point_cloud, skybox_points = skybox_points,skybox_radius_scale=skybox_radius_scale)
                        
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
         self._features_dc = nn.Parameter(features_dc.transpose(1, 2).contiguous().requires_grad_(True))
@@ -133,8 +156,8 @@ class GaussianModel():
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
         self._extra_attrs = nn.Parameter(torch.zeros((fused_point_cloud.shape[0], self._extra_attrs_dim), device="cuda").requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
-        
-    def add_skybox(self,xyz,features_dc,features_rest,scales,rots,opacities,skybox_points = 100_000):
+        self.init_scaling = scales
+    def add_skybox(self,xyz,skybox_points = 100_000,skybox_radius_scale=2.0):
             minimum, _ = torch.min(xyz, axis=0)
             maximum, _ = torch.max(xyz, axis=0)
             mean = 0.5 * (minimum + maximum)
@@ -144,14 +167,14 @@ class GaussianModel():
             # xyz
             theta = (2.0 * torch.pi * torch.rand(skybox_points//2, device="cuda")).float()
             # phi = (torch.arccos(1.0 - 1.4 * torch.rand(skybox_points, device="cuda"))).float()
-            phi = (torch.arccos(torch.pi * torch.rand(skybox_points//2, device="cuda"))).float()
+            phi = (torch.arccos( torch.rand(skybox_points//2, device="cuda"))).float()
             skybox_xyz = torch.zeros((skybox_points, 3))
-            skybox_xyz[:skybox_points//2, 0] = radius * 10 * torch.cos(theta)*torch.sin(phi)
-            skybox_xyz[:skybox_points//2, 1] = radius * 10 * torch.sin(theta)*torch.sin(phi)
-            skybox_xyz[:skybox_points//2, 2] = -radius * 10 * torch.cos(phi)
-            skybox_xyz[skybox_points//2:, 0] = radius * 10 * torch.cos(theta)*torch.sin(phi)
-            skybox_xyz[skybox_points//2:, 1] = radius * 10 * torch.sin(theta)*torch.sin(phi)
-            skybox_xyz[skybox_points//2:, 2] = radius * 10 * torch.cos(phi)
+            skybox_xyz[:skybox_points//2, 0] = radius * skybox_radius_scale * torch.cos(theta)*torch.sin(phi)
+            skybox_xyz[:skybox_points//2, 1] = radius * skybox_radius_scale * torch.sin(theta)*torch.sin(phi)
+            skybox_xyz[:skybox_points//2, 2] = -radius * skybox_radius_scale * torch.cos(phi)
+            skybox_xyz[skybox_points//2:, 0] = radius * skybox_radius_scale * torch.cos(theta)*torch.sin(phi)
+            skybox_xyz[skybox_points//2:, 1] = radius * skybox_radius_scale * torch.sin(theta)*torch.sin(phi)
+            skybox_xyz[skybox_points//2:, 2] = radius * skybox_radius_scale * torch.cos(phi)
             skybox_xyz += mean.cpu()
 
             # sh
@@ -159,33 +182,10 @@ class GaussianModel():
             fused_color[:skybox_points,0] *= (205/255)
             fused_color[:skybox_points,1] *= (218/255)
             fused_color[:skybox_points,2] *= (226/255)
-
-            features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
-            features[:, :3, 0 ] = RGB2SH(fused_color)
-            features[:, 3:, 1:] = 0.0
-
-            skybox_features_dc = features[:,:,0:1]
-            skybox_features_rest = features[:,:,1:]
-
-            xyz = torch.concat((skybox_xyz.cuda(), xyz))
-
-            # 缩放和旋转
-            dist2 = torch.clamp_min(distCUDA2(xyz), 0.0000001) 
-            skybox_scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)[:skybox_points,...] * 1.5 # 原本的scale太小，导致三三思sky box没有全部遮住，所以* 1.2
-            skybox_rots = torch.zeros((xyz.shape[0], 4), device="cuda")[:skybox_points,...]
-            skybox_rots[:, 0] = 1
-
-            # 不透明度
-            skybox_opacities = self.inverse_opacity_activation(0.02 * torch.ones((skybox_xyz.shape[0], 1), dtype=torch.float, device="cuda"))
-            skybox_opacities[:skybox_points] = 0.7
-
-            # 合并天空盒和背景
-            features_dc = torch.concat((skybox_features_dc.cuda(), features_dc))
-            features_rest = torch.concat((skybox_features_rest.cuda(), features_rest))
-            opacities = torch.concat((skybox_opacities.cuda(), opacities))
-            scales = torch.concat((skybox_scales.cuda(), scales))
-            rots = torch.concat((skybox_rots.cuda(), rots))
-            return xyz, features_dc, features_rest, scales, rots, opacities
+            skyboxer =GaussianModel(init_sh_dgree=self.max_sh_degree, max_sh_degree=self.max_sh_degree,extra_attrs_dim=self._extra_attrs_dim,max_scale=None)
+            skyboxer.create_from_pcd(skybox_xyz.cpu().numpy(), fused_color.cpu().numpy(), spatial_lr_scale=self.spatial_lr_scale, add_skybox=False)
+            self.skyboxer = skyboxer
+            
     def training_setup(self, lr
                        ):
  
@@ -238,13 +238,13 @@ class GaussianModel():
     def save_ply(self, path):
         mkdir_p(os.path.dirname(path))
 
-        xyz = self._xyz.detach().cpu().numpy()
+        xyz = self.get_xyz.detach().cpu().numpy()
         normals = np.zeros_like(xyz)
-        f_dc = self._features_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
-        f_rest = self._features_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
-        opacities = self._opacity.detach().cpu().numpy()
-        scale = self._scaling.detach().cpu().numpy()
-        rotation = self._rotation.detach().cpu().numpy()
+        f_dc = self.get_features_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+        f_rest = self.get_features_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+        opacities = self.inverse_opacity_activation(self.get_opacity).detach().cpu().numpy()
+        scale = self.scaling_inverse_activation(self.get_scaling).detach().cpu().numpy()
+        rotation = self.get_rotation.detach().cpu().numpy()
 
         dtype_full = [(attribute, 'f4') for attribute in self.construct_list_of_attributes()]
 
@@ -258,7 +258,11 @@ class GaussianModel():
         opacities_new = self.inverse_opacity_activation(torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.01))
         optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
         self._opacity = optimizable_tensors["opacity"]
-
+    def reset_scaling(self):
+        if self.max_scale is not None:
+            scaling_new = self.scaling_inverse_activation(torch.min(self.scaling_activation(self._scaling),torch.ones_like(self._scaling)*self.max_scale))
+            optimizable_tensors = self.replace_tensor_to_optimizer(scaling_new, "scaling")
+            self._scaling = optimizable_tensors["scaling"]
     def load_ply(self, path):
         plydata = PlyData.read(path)
     
@@ -301,7 +305,7 @@ class GaussianModel():
         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
 
-        
+        self.init_scaling = scales
     def replace_tensor_to_optimizer(self, tensor, name):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:

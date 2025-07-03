@@ -172,8 +172,6 @@ class GSTrainer():
                     enable_train_all=True,
                     enable_cam_update=False,
                     
-             
-             
                     enable_save_rendered_images=True,
                     enable_save_rendered_depth=False,
                     enable_save_rendered_normals=False,
@@ -181,6 +179,8 @@ class GSTrainer():
                     enable_save_rendered_extra_attrs=False,
 
                     #训练参数
+                    max_scale = None,
+                    skybox_points = 100_000,skybox_radius_scale=10.0,
                     extra_attrs_dim = 0,
                     eval_rate=1.0,
                     lr_args=LearningRate,
@@ -196,6 +196,7 @@ class GSTrainer():
                     save_interval=10_000,
                     eval_interval=1000,
                     opacity_reset_interval=3000,
+                    scaling_reset_interval=200,
                     densify_from_iter=500,
                     densification_interval=100,
                     densify_until_iter=15_000,
@@ -204,7 +205,9 @@ class GSTrainer():
                  ):
         print(lr_args)
         print(loss_weights)
-        gaussians = GaussianModel(init_degree,max_sh_degree,extra_attrs_dim)
+        if max_scale is not None:
+            print(f"max scale is set to {max_scale}, the scale will be clamped to this value after every {scaling_reset_interval} iterations")
+        gaussians = GaussianModel(init_degree,max_sh_degree,extra_attrs_dim,max_scale)
         cams = None
 
         #载入COLMAP数据或者提供的相机参数
@@ -235,7 +238,7 @@ class GSTrainer():
                 xyz, rgb, _ = read_points3D_text(txt_path)
             if rgb.max() > 1.0:
                 rgb = rgb / 255.0
-            gaussians.create_from_pcd(xyz, rgb,  nerf_normalization["radius"],add_skybox)
+            gaussians.create_from_pcd(xyz, rgb,  nerf_normalization["radius"],add_skybox,skybox_points = skybox_points,skybox_radius_scale=skybox_radius_scale)
             cams = nn.ModuleList(cam_infos)
    
         elif w2c is not None and intrinsics is not None and (images is not None or (height is not None and width is not None)) and (xyz is not None or pretrained_path is not None):
@@ -248,7 +251,7 @@ class GSTrainer():
                     rgb = np.ones_like(xyz, dtype=np.float32)* 0.5
                 if rgb.max() > 1.0:
                     rgb = rgb / 255.0
-                gaussians.create_from_pcd(xyz, rgb, nerf_normalization["radius"],add_skybox)
+                gaussians.create_from_pcd(xyz, rgb, nerf_normalization["radius"],add_skybox,skybox_points = skybox_points,skybox_radius_scale=skybox_radius_scale)
             cams = nn.ModuleList(cam_infos)
         else:
             raise ValueError("Either colmap_path or w2c, intrinsics, images and (xyz or pretrained_path) must be provided.")
@@ -298,6 +301,10 @@ class GSTrainer():
         print(f"Model will be saved to {save_dir}")
         #设置gs优化器
         gaussians.training_setup(lr_args)
+        lr_skyboxer = {k:v for k,v in lr_args.items()}
+        lr_skyboxer["rotation_lr"] = 0.0
+        lr_skyboxer["scaling_lr"] = 0.0
+        gaussians.skyboxer.training_setup(lr_skyboxer)
 
         #初始化参数
         self.gaussians = gaussians
@@ -313,6 +320,7 @@ class GSTrainer():
         self.densify_from_iter = densify_from_iter
         self.densification_interval = densification_interval
         self.opacity_reset_interval = opacity_reset_interval
+        self.scaling_reset_interval = scaling_reset_interval
         self.densify_grad_threshold = densify_grad_threshold
         self.densify_until_iter = densify_until_iter
         self.iterations = iterations
@@ -342,12 +350,12 @@ class GSTrainer():
         for iteration in range(self.iterations):
 
             self.gaussians.update_learning_rate(iteration)
-            if iteration % self.sh_increase_interval == 0:
+            if (iteration+1) % self.sh_increase_interval == 0:
                 self.gaussians.oneupSHdegree()
             if len(indices_random)==0:
                 indices_random = deepcopy(self.indices_for_train)
                 random.shuffle(indices_random)
-
+   
             viewpoint_cam = self.cams[indices_random.pop()]
             render_pkg = render(viewpoint_cam, self.gaussians, self.background)
             image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
@@ -377,14 +385,7 @@ class GSTrainer():
             loss.backward()
 
             with torch.no_grad():
-                if (iteration in self.save_iterations) or (iteration % self.save_interval == 0) or (iteration == self.iterations - 1):
-                    os.makedirs(os.path.join(self.save_dir, f"{iteration}"), exist_ok=True)
-                    save_path = os.path.join(self.save_dir,f"{iteration}", f"model.ply")
-                    self.gaussians.save_ply(save_path)
-                    save_path = os.path.join(self.save_dir,f"{iteration}", f"cameras.pth")
-                    torch.save(self.cams.state_dict(), save_path)
-                    save_path = os.path.join(self.save_dir,f"{iteration}", f"extra_attrs.pth")
-                    torch.save(self.gaussians._extra_attrs.detach().cpu(), save_path)
+                
                 if iteration < self.densify_until_iter and self.enable_densification:
                     # Keep track of max radii in image-space for pruning
                     self.gaussians.max_radii2D[visibility_filter] = torch.max(self.gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
@@ -393,14 +394,28 @@ class GSTrainer():
                         size_threshold = 20 if iteration > self.opacity_reset_interval else None
                         self.gaussians.densify_and_prune(self.densify_grad_threshold, 0.005, self.gaussians.spatial_lr_scale, size_threshold, radii)
 
-                    if iteration+1 % self.opacity_reset_interval == 0 and self.enable_reset_opacity:
+                    if (iteration+1) % self.opacity_reset_interval == 0 and self.enable_reset_opacity:
                         self.gaussians.reset_opacity()
-
+    
             self.gaussians.optimizer.step()
             self.gaussians.optimizer.zero_grad(set_to_none = True)
+            if self.gaussians.skyboxer is not None:
+                self.gaussians.skyboxer.optimizer.step()
+                self.gaussians.skyboxer.optimizer.zero_grad(set_to_none = True)
             if self.optimizer_cam is not None:
                 self.optimizer_cam.step()
                 self.optimizer_cam.zero_grad(set_to_none = True)
+            if iteration % self.scaling_reset_interval == 0 or iteration == self.iterations - 1:
+                self.gaussians.reset_scaling()  
+            
+            if (iteration in self.save_iterations) or (iteration % self.save_interval == 0) or (iteration == self.iterations - 1):
+                    os.makedirs(os.path.join(self.save_dir, f"{iteration}"), exist_ok=True)
+                    save_path = os.path.join(self.save_dir,f"{iteration}", f"model.ply")
+                    self.gaussians.save_ply(save_path)
+                    save_path = os.path.join(self.save_dir,f"{iteration}", f"cameras.pth")
+                    torch.save(self.cams.state_dict(), save_path)
+                    save_path = os.path.join(self.save_dir,f"{iteration}", f"extra_attrs.pth")
+                    torch.save(self.gaussians.get_extra_attrs.detach().cpu(), save_path)
             self.pbar.update(self.train_task, advance=1,description=f"[red]Training...  | Loss: {loss.item():.4f}")
 
             if iteration % self.eval_interval == 0 or iteration == self.iterations - 1:

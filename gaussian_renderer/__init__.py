@@ -68,8 +68,10 @@ def render(viewpoint_camera, pc : GaussianModel, bg_color : torch.Tensor, scalin
     shs = None
     colors_precomp = None
     shs = pc.get_features
-
+    
     extra_attrs = pc.get_extra_attrs
+    if pc._extra_attrs_dim==0:
+        extra_attrs = None
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
     
     rendered_image, rendered_depth, rendered_norm, rendered_alpha, radii, extra_attrs  = rasterizer(
