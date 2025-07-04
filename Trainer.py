@@ -179,7 +179,8 @@ class GSTrainer():
                     enable_save_rendered_extra_attrs=False,
 
                     #训练参数
-                    max_scale = None,
+                    verbose =True,
+                    percent_dense=0.01,
                     skybox_points = 100_000,skybox_radius_scale=10.0,
                     extra_attrs_dim = 0,
                     eval_rate=1.0,
@@ -196,7 +197,7 @@ class GSTrainer():
                     save_interval=10_000,
                     eval_interval=1000,
                     opacity_reset_interval=3000,
-                    scaling_reset_interval=200,
+                   
                     densify_from_iter=500,
                     densification_interval=100,
                     densify_until_iter=15_000,
@@ -205,9 +206,8 @@ class GSTrainer():
                  ):
         print(lr_args)
         print(loss_weights)
-        if max_scale is not None:
-            print(f"max scale is set to {max_scale}, the scale will be clamped to this value after every {scaling_reset_interval} iterations")
-        gaussians = GaussianModel(init_degree,max_sh_degree,extra_attrs_dim,max_scale)
+   
+        gaussians = GaussianModel(init_degree,max_sh_degree,extra_attrs_dim,percent_dense,verbose=verbose)
         cams = None
 
         #载入COLMAP数据或者提供的相机参数
@@ -321,7 +321,7 @@ class GSTrainer():
         self.densify_from_iter = densify_from_iter
         self.densification_interval = densification_interval
         self.opacity_reset_interval = opacity_reset_interval
-        self.scaling_reset_interval = scaling_reset_interval
+       
         self.densify_grad_threshold = densify_grad_threshold
         self.densify_until_iter = densify_until_iter
         self.iterations = iterations
@@ -359,7 +359,7 @@ class GSTrainer():
    
             viewpoint_cam = self.cams[indices_random.pop()]
             render_pkg = render(viewpoint_cam, self.gaussians, self.background)
-            image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+            image, viewspace_point_tensor, visibility_filter = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"]          
             depth,normals,alpha, extra_attrs = render_pkg["depth"], render_pkg["normals"], render_pkg["alpha"], render_pkg["extra_attrs"]
             gt_image = viewpoint_cam.image_gt.cuda()
             Ll1 = l1_loss(image, gt_image)
@@ -389,11 +389,12 @@ class GSTrainer():
                 
                 if iteration < self.densify_until_iter and self.enable_densification:
                     # Keep track of max radii in image-space for pruning
-                    self.gaussians.max_radii2D[visibility_filter] = torch.max(self.gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
-                    self.gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
+                    viewspace_point_tensor_grad = viewspace_point_tensor.grad[self.gaussians.num_fixed_points:]
+                    visibility_filter = visibility_filter[self.gaussians.num_fixed_points:].nonzero()
+                 
+                    self.gaussians.add_densification_stats(viewspace_point_tensor_grad, visibility_filter)
                     if iteration > self.densify_from_iter and iteration % self.densification_interval == 0:
-                        size_threshold = 20 if iteration > self.opacity_reset_interval else None
-                        self.gaussians.densify_and_prune(self.densify_grad_threshold, 0.005, self.gaussians.spatial_lr_scale, size_threshold, radii)
+                        self.gaussians.densify_and_prune(self.densify_grad_threshold, 0.005,)
 
                     if (iteration+1) % self.opacity_reset_interval == 0 and self.enable_reset_opacity:
                         self.gaussians.reset_opacity()
@@ -406,8 +407,7 @@ class GSTrainer():
             if self.optimizer_cam is not None:
                 self.optimizer_cam.step()
                 self.optimizer_cam.zero_grad(set_to_none = True)
-            if iteration % self.scaling_reset_interval == 0 or iteration == self.iterations - 1:
-                self.gaussians.reset_scaling()  
+             
             
             if (iteration in self.save_iterations) or (iteration % self.save_interval == 0) or (iteration == self.iterations - 1):
                     os.makedirs(os.path.join(self.save_dir, f"{iteration}"), exist_ok=True)
@@ -431,7 +431,7 @@ class GSTrainer():
         for idx,ind_for_eval in enumerate(self.indices_for_eval):
             viewpoint_cam = self.cams[ind_for_eval]
             render_pkg = render(viewpoint_cam, self.gaussians, self.background)
-            image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+            image = render_pkg["render"]
             depth,normals,alpha, extra_attrs = render_pkg["depth"], render_pkg["normals"], render_pkg["alpha"], render_pkg["extra_attrs"]
             self.save_outputs(render_pkg,viewpoint_cam,iteration)
             gt_image = viewpoint_cam.image_gt.cuda()
