@@ -304,7 +304,7 @@ class GaussianModel():
         self._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device="cuda").requires_grad_(True))
         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
-
+        self._extra_attrs = nn.Parameter(torch.zeros((xyz.shape[0], self._extra_attrs_dim), device="cuda").requires_grad_(True))
         
     def replace_tensor_to_optimizer(self, tensor, name):
         optimizable_tensors = {}
