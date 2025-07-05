@@ -307,6 +307,8 @@ class GSTrainer():
         if gaussians.skyboxer is not None:
             lr_skyboxer = {k:v for k,v in lr_args.items()}
             lr_skyboxer["feature_lr"] = 0.00005
+            lr_skyboxer["extra_attrs_lr"] = 0.   
+            lr_skyboxer["opacity_lr"] = 0.
             # lr_skyboxer["rotation_lr"] = 0.0
             # lr_skyboxer["scaling_lr"] = 0.0
             gaussians.skyboxer.training_setup(lr_skyboxer)
@@ -549,7 +551,7 @@ if __name__ == "__main__":
         width=800,
         #训练和测试设置
         add_skybox=True,
-        enable_save_skybox=True,
+        enable_save_skybox=False,
         enable_densification=True,
         enable_reset_opacity=True,
         enable_train_all=True,

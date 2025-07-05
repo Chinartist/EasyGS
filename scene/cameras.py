@@ -77,7 +77,7 @@ class Camera(nn.Module):
         else:
             self.alpha_gt = None
         if extra_attrs is not None:
-            self.extra_attrs_gt = torch.tensor(np.array(extra_attrs), dtype=torch.float32)
+            self.extra_attrs_gt = torch.tensor(np.array(extra_attrs), dtype=torch.int16)
         else:
             self.extra_attrs_gt = None
 
