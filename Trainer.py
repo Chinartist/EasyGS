@@ -299,6 +299,7 @@ class GSTrainer():
         if not enable_reset_opacity:
             print("enable_reset_opacity is set to False, opacity will not be reset during training.")
         print(f"Model will be saved to {save_dir}")
+        print(f"Scene extent: {gaussians.scene_extent}")
         #设置gs优化器
         gaussians.training_setup(lr_args)
         if gaussians.skyboxer is not None:
