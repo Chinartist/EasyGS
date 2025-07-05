@@ -42,7 +42,7 @@ class GaussianModel():
         self.rotation_activation = torch.nn.functional.normalize
 
 
-    def __init__(self,init_sh_dgree, max_sh_degree,extra_attrs_dim=0,scene_extent=1,percent_dense=0.01,verbose=True):
+    def __init__(self,init_sh_dgree, max_sh_degree,extra_attrs_dim=0,percent_dense=0.01,verbose=True):
         assert init_sh_dgree <= max_sh_degree, "Initial SH degree must be less than or equal to the maximum SH degree."
         self.active_sh_degree = init_sh_dgree
         self.max_sh_degree = max_sh_degree  
@@ -59,8 +59,7 @@ class GaussianModel():
         self._extra_attrs_dim = extra_attrs_dim
    
         self.percent_dense = percent_dense
-        self.scene_extent = scene_extent
-        self.scene_extent = 0
+        self.scene_extent = 1.0
         self.skyboxer = None
         self.num_fixed_points =0
         self.verbose = verbose
