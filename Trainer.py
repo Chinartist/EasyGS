@@ -23,17 +23,17 @@ import pycolmap
 from copy import deepcopy
 from rich import print
 from rich.progress import Progress,track, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn,SpinnerColumn ,RenderableColumn,MofNCompleteColumn
-
+import wandb
 LearningRate =dict(
             position_lr_init = 0.00016,
             position_lr_final = 0.0000016,
             position_lr_delay_mult = 0.01,
             position_lr_max_steps = 30_000,
-            cam_lr = 0.00016,
+            cam_lr = 0.0016,
             extra_attrs_lr=0.001,
             feature_lr = 0.0025,
             opacity_lr = 0.025,
-            scaling_lr = 0.005,
+            scaling_lr = 0.0005,
             rotation_lr = 0.001,
     )
 LossWeights = dict(
@@ -171,7 +171,7 @@ class GSTrainer():
                     enable_reset_opacity=True,
                     enable_train_all=True,
                     enable_cam_update=False,
-                    
+                    enable_save_skybox=False,
                     enable_save_rendered_images=True,
                     enable_save_rendered_depth=False,
                     enable_save_rendered_normals=False,
@@ -193,7 +193,7 @@ class GSTrainer():
 
                     iterations=30_000,
                     sh_increase_interval=1000,
-                    save_iterations=[15_000, 30_000],
+             
                     save_interval=10_000,
                     eval_interval=1000,
                     opacity_reset_interval=3000,
@@ -202,6 +202,8 @@ class GSTrainer():
                     densification_interval=100,
                     densify_until_iter=15_000,
                     densify_grad_threshold= 0.0002,
+                    wandb_project="PPGS",
+                    wandb_name="3dgs",
 
                  ):
         print(lr_args)
@@ -304,8 +306,9 @@ class GSTrainer():
         gaussians.training_setup(lr_args)
         if gaussians.skyboxer is not None:
             lr_skyboxer = {k:v for k,v in lr_args.items()}
-            lr_skyboxer["rotation_lr"] = 0.0
-            lr_skyboxer["scaling_lr"] = 0.0
+            lr_skyboxer["feature_lr"] = 0.00005
+            # lr_skyboxer["rotation_lr"] = 0.0
+            # lr_skyboxer["scaling_lr"] = 0.0
             gaussians.skyboxer.training_setup(lr_skyboxer)
 
         #初始化参数
@@ -318,7 +321,7 @@ class GSTrainer():
         self.enable_save_rendered_normals = enable_save_rendered_normals
         self.enable_save_rendered_alpha = enable_save_rendered_alpha
         self.enable_save_rendered_extra_attrs= enable_save_rendered_extra_attrs
-       
+        self.enable_save_skybox = enable_save_skybox
         self.densify_from_iter = densify_from_iter
         self.densification_interval = densification_interval
         self.opacity_reset_interval = opacity_reset_interval
@@ -326,7 +329,7 @@ class GSTrainer():
         self.densify_grad_threshold = densify_grad_threshold
         self.densify_until_iter = densify_until_iter
         self.iterations = iterations
-        self.save_iterations = save_iterations
+
         self.save_interval = save_interval
         self.eval_interval = eval_interval
         self.eval_rate = eval_rate
@@ -346,6 +349,17 @@ class GSTrainer():
         self.pbar = pbar
         self.train_task = self.pbar.add_task("[red]Training...", total= self.iterations)
         self.eval_task = self.pbar.add_task("[green]Evaluating...", total= len(self.indices_for_eval))
+        #遍历所有属性，将字符串和数字属性转换为字典
+        all_args = {}
+        for key, value in self.__dict__.items():
+            if isinstance(value, str) or isinstance(value, int):
+                all_args[key] = value
+        wandb.init(config=all_args,
+               project=wandb_project,
+               name=wandb_name,
+               dir=save_dir,
+               )
+        
     def train(self,):
         indices_random = deepcopy(self.indices_for_train)
         random.shuffle(indices_random)
@@ -385,20 +399,8 @@ class GSTrainer():
                 loss += extra_attrs_loss * self.loss_weights["extra_attrs_weight"]
             
             loss.backward()
-
-            with torch.no_grad():
-                
-                if iteration < self.densify_until_iter and self.enable_densification:
-                    # Keep track of max radii in image-space for pruning
-                    viewspace_point_tensor_grad = viewspace_point_tensor.grad[self.gaussians.num_fixed_points:]
-                    visibility_filter = visibility_filter[self.gaussians.num_fixed_points:].nonzero()
-                 
-                    self.gaussians.add_densification_stats(viewspace_point_tensor_grad, visibility_filter)
-                    if iteration > self.densify_from_iter and iteration % self.densification_interval == 0:
-                        self.gaussians.densify_and_prune(self.densify_grad_threshold, 0.005,)
-
-                    if (iteration+1) % self.opacity_reset_interval == 0 and self.enable_reset_opacity:
-                        self.gaussians.reset_opacity()
+            viewspace_point_tensor_grad = viewspace_point_tensor.grad
+            
     
             self.gaussians.optimizer.step()
             self.gaussians.optimizer.zero_grad(set_to_none = True)
@@ -410,19 +412,31 @@ class GSTrainer():
                 self.optimizer_cam.zero_grad(set_to_none = True)
              
             
-            if (iteration in self.save_iterations) or (iteration % self.save_interval == 0) or (iteration == self.iterations - 1):
+            if  ((iteration+1) % self.save_interval == 0) or (iteration == self.iterations - 1) or iteration == 0:
                     os.makedirs(os.path.join(self.save_dir, f"{iteration}"), exist_ok=True)
                     save_path = os.path.join(self.save_dir,f"{iteration}", f"model.ply")
-                    self.gaussians.save_ply(save_path)
+                    self.gaussians.save_ply(save_path,self.enable_save_skybox)
                     save_path = os.path.join(self.save_dir,f"{iteration}", f"cameras.pth")
                     torch.save(self.cams.state_dict(), save_path)
                     save_path = os.path.join(self.save_dir,f"{iteration}", f"extra_attrs.pth")
                     torch.save(self.gaussians.get_extra_attrs.detach().cpu(), save_path)
             self.pbar.update(self.train_task, advance=1,description=f"[red]Training...  | Loss: {loss.item():.4f}")
 
-            if iteration % self.eval_interval == 0 or iteration == self.iterations - 1:
+            if (iteration+1) % self.eval_interval == 0 or iteration == self.iterations - 1 or iteration == 0:
                 self.eval(iteration)
+            with torch.no_grad():
+                    
+                if iteration < self.densify_until_iter and self.enable_densification:
+                    # Keep track of max radii in image-space for pruning
+                    viewspace_point_tensor_grad = viewspace_point_tensor_grad[self.gaussians.num_fixed_points:]
+                    visibility_filter = visibility_filter[self.gaussians.num_fixed_points:].nonzero()
+                    
+                    self.gaussians.add_densification_stats(viewspace_point_tensor_grad, visibility_filter)
+                    if iteration > self.densify_from_iter and (iteration+1) % self.densification_interval == 0:
+                        self.gaussians.densify_and_prune(self.densify_grad_threshold, 0.005,)
 
+                    if (iteration+1) % self.opacity_reset_interval == 0 and self.enable_reset_opacity:
+                        self.gaussians.reset_opacity()
     @torch.no_grad()
     def eval(self,iteration=0):
         self.pbar.reset(self.eval_task)
@@ -446,7 +460,7 @@ class GSTrainer():
         l1_mean = sum(l1_record) / len(l1_record)
         ssim_mean = sum(ssim_record) / len(ssim_record)
         psnr_mean = sum(psnr_record) / len(psnr_record) 
-        
+        wandb.log({"PSNR": psnr_mean, "SSIM": ssim_mean, "L1": l1_mean},step=iteration)
         print(f"Evaluation results of {iteration}: PSNR: {psnr_mean:.4f}, SSIM: {ssim_mean:.4f}, L1: {l1_mean:.4f}")
         return None
     def save_outputs(self,render_pkg,viewpoint_cam,iteration):
@@ -527,35 +541,45 @@ if __name__ == "__main__":
     # LearningRate["position_lr_delay_mult"]=0.
     trainer = GSTrainer(
         #要么提供COLMAP路径，要么提供相机参数
-        colmap_path="/nvme0/public_data/Occupancy/proj/vis/gaussian-splatting/inputs/full/figurines",
-        # pretrained_path="/nvme0/public_data/Occupancy/proj/vggt/examples/drive/900",
-        save_dir="/nvme0/public_data/Occupancy/proj/vggt/examples/figurines",
-        height=450,
+        colmap_path="/home/tangyuan/project/data/aligned",
+        images_folder="/home/tangyuan/project/data/images",
+        # pretrained_path="/home/tangyuan/project/data/static_scene/merged.ply",#pretrained model path, if you want to use a pretrained model, set this. pretrained_path can also be ply file
+        save_dir="/home/tangyuan/project/data/3dgs",
+        height=450,#if you want to resize the image, you need to set this
         width=800,
         #训练和测试设置
+        add_skybox=True,
+        enable_save_skybox=True,
         enable_densification=True,
         enable_reset_opacity=True,
         enable_train_all=True,
-        enable_cam_update=False,
+        enable_cam_update=True,#if you want to update the camera parameters, set this to True
         enable_save_rendered_images=True,
-        enable_save_rendered_depth=True,
+        enable_save_rendered_depth=False,
         enable_save_rendered_normals=False,
         enable_save_rendered_alpha=False,
         enable_save_rendered_extra_attrs=False,
-
+        verbose=True,
         #训练参数
+        percent_dense = 0.001,
         extra_attrs_dim=0,
         eval_rate=0.1,
         lr_args=LearningRate,
         loss_weights=LossWeights,
        
-        init_degree=3,
+        init_degree=0,
         max_sh_degree=3,
         bg_color = [1, 1, 1],
-
-        iterations=10_000,
-        save_interval=1000,
-        eval_interval=250)
+        sh_increase_interval = 1000,
+        densify_from_iter=0,
+        densify_until_iter=100_000,
+        densification_interval=100,
+        opacity_reset_interval=3000,
+        iterations=100_000,
+        save_interval=3000,
+        eval_interval=3000,
+        wandb_project="PPGS",
+        wandb_name="3dgs")
     # trainer.save_colmap(trainer.save_dir, save_image=True)
     trainer.train()
     print("Training finished.")

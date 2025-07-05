@@ -1,4 +1,9 @@
 # Plug-and-Play 3DGS
+## Install
+```bash
+pip install pycolmap==3.11
+pip install wandb
+```
 ## How to train with COLMAP format data
 ``` python
 from PPGS.Trainer import GSTrainer, LearningRate, LossWeights

@@ -140,7 +140,7 @@ class GaussianModel():
         print("Number of points at initialisation : ", fused_point_cloud.shape[0])
 
         dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(xyz)).float().cuda()), 0.0000001)
-        scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)
+        scales = torch.log( torch.clamp_max(torch.sqrt(dist2),self.scene_extent*self.percent_dense) )[...,None].repeat(1, 3)
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1
 
@@ -184,7 +184,7 @@ class GaussianModel():
             fused_color[:skybox_points,0] *= (205/255)
             fused_color[:skybox_points,1] *= (218/255)
             fused_color[:skybox_points,2] *= (226/255)
-            skyboxer =GaussianModel(init_sh_dgree=self.max_sh_degree, max_sh_degree=self.max_sh_degree,extra_attrs_dim=self._extra_attrs_dim,)
+            skyboxer =GaussianModel(init_sh_dgree=self.max_sh_degree, max_sh_degree=self.max_sh_degree,extra_attrs_dim=self._extra_attrs_dim,percent_dense=1e10)
             skyboxer.create_from_pcd(skybox_xyz.cpu().numpy(), fused_color.cpu().numpy(), scene_extent=self.scene_extent, add_skybox=False)
             self.num_fixed_points += skybox_points
             self.skyboxer = skyboxer
@@ -238,9 +238,11 @@ class GaussianModel():
             l.append('rot_{}'.format(i))
         return l
 
-    def save_ply(self, path):
+    def save_ply(self, path,enable_save_skybox=False):
         mkdir_p(os.path.dirname(path))
-
+        if not enable_save_skybox:
+            skyboxer = self.skyboxer
+            self.skyboxer = None
         xyz = self.get_xyz.detach().cpu().numpy()
         normals = np.zeros_like(xyz)
         f_dc = self.get_features_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
@@ -256,6 +258,8 @@ class GaussianModel():
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
+        if not enable_save_skybox:
+            self.skyboxer = skyboxer
 
     def reset_opacity(self):
         opacities_new = self.opacity_inverse_activation(torch.min(self.opacity_activation(self._opacity), torch.ones_like(self.opacity_activation(self._opacity))*0.01))
@@ -458,10 +462,10 @@ class GaussianModel():
         #不透明度小于阈值以及scale大于self.percent_dense* scene_extent 均被删除
         prune_mask = (self.opacity_activation(self._opacity)< min_opacity).squeeze()
         
-        big_points_ws = self.scaling_activation(self._scaling).max(dim=1).values > self.percent_dense* self.scene_extent*2
-        prune_mask = torch.logical_or(prune_mask, big_points_ws)
+        # big_points_ws = self.scaling_activation(self._scaling).max(dim=1).values > self.percent_dense* self.scene_extent*10
+        # prune_mask = torch.logical_or(prune_mask, big_points_ws)
         if self.verbose:
-            print(f"prune {prune_mask.sum()} points ")
+            print(f"prune {prune_mask.sum()} points \n")       
  
         self.prune_points(prune_mask)
     
