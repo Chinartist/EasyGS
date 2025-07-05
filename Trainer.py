@@ -206,7 +206,7 @@ class GSTrainer():
                  ):
         print(lr_args)
         print(loss_weights)
-   
+        
         gaussians = GaussianModel(init_degree,max_sh_degree,extra_attrs_dim,percent_dense,verbose=verbose)
         cams = None
 
