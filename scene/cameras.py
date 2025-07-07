@@ -48,9 +48,9 @@ def rotmat2qvec(R):
         qvec *= -1
     return qvec
 class Camera(nn.Module):
-    def __init__(self, idx, R, T, FoVx, FoVy,focal_length_x,focal_length_y,image, depth,normal,alpha,extra_attrs,
+    def __init__(self, idx, R, T, FoVx, FoVy,focal_length_x,focal_length_y,height,width,image, depth,normal,alpha,extra_attrs,
                  image_path,
-                 image_name,
+                 image_name,preload=True
                  ):
         super(Camera, self).__init__()
 
@@ -63,26 +63,41 @@ class Camera(nn.Module):
         self.focal_length_y = focal_length_y
         self.image_name = image_name
         self.image_path = image_path    
-        self.image_gt = to_tensor(image)
-        if depth is not None:
-            self.depth_gt = torch.tensor(np.array(depth), dtype=torch.float32)
+        if preload and isinstance(image,str):
+            self.image_gt = to_tensor(Image.open(image).resize((width,height),Image.LANCZOS))
         else:
-            self.depth_gt = None
-        if normal is not None:
-            self.normal_gt = torch.tensor(np.array(normal), dtype=torch.float32)
+            self.image_gt = image
+        
+        if preload and isinstance(depth,str):
+            self.depth_gt = torch.tensor(np.array(np.load(depth)), dtype=torch.float32)
+            self.depth_gt = torch.nn.functional.interpolate(self.depth_gt[None,None],size=(height,width),mode="bilinear",align_corners=False)[0,0]
         else:
-            self.normal_gt = None
-        if alpha is not None:
-            self.alpha_gt = torch.tensor(np.array(alpha), dtype=torch.float32)
+            self.depth_gt = depth
+       
+        
+        if preload and isinstance(normal,str):
+            self.normal_gt = torch.tensor(np.array(np.load(normal)), dtype=torch.float32)
+            self.normal_gt = torch.nn.functional.interpolate(self.normal_gt[None],size=(height,width),mode="bilinear",align_corners=False)[0]
         else:
-            self.alpha_gt = None
-        if extra_attrs is not None:
-            self.extra_attrs_gt = torch.tensor(np.array(extra_attrs), dtype=torch.int16)
+            self.normal_gt = normal
+        
+        
+        if preload and isinstance(alpha,str):
+            self.alpha_gt = torch.tensor(np.array(Image.open(alpha)), dtype=torch.float32)
+            self.alpha_gt = torch.nn.functional.interpolate(self.alpha_gt[None,None],size=(height,width),mode="nearest")[0,0]
         else:
-            self.extra_attrs_gt = None
+            self.alpha_gt = alpha
+       
+        
+        if preload and isinstance(extra_attrs,str):
+            self.extra_attrs_gt = torch.tensor(np.array(np.load(extra_attrs)), dtype=torch.int16)
+            self.extra_attrs_gt = torch.nn.functional.interpolate(self.extra_attrs_gt[None,None].float(),size=(height,width),mode="nearest")[0,0].long()
+        else:
+            self.extra_attrs_gt = extra_attrs
+      
 
-        self.image_width = self.image_gt.shape[2]
-        self.image_height = self.image_gt.shape[1]
+        self.image_width = width
+        self.image_height = height
         self.zfar = 100.0
         self.znear = 0.01
         # self.world_view_transform = torch.tensor(getWorld2View(R, T)).transpose(0, 1).cuda()#w2c.T
@@ -98,3 +113,37 @@ class Camera(nn.Module):
         w2c[:3, 3] = self.tvec
         w2c[3, 3] = 1.0
         return w2c.transpose(0, 1)
+    @property
+    def get_image_gt(self):
+        if isinstance(self.image_gt,str):
+            return to_tensor(Image.open(self.image_gt).resize((self.image_width,self.image_height),Image.LANCZOS))
+        else:
+            return self.image_gt
+    @property
+    def get_depth_gt(self):
+        if isinstance(self.depth_gt,str):
+            return torch.nn.functional.interpolate(torch.tensor(np.array(np.load(self.depth_gt)), dtype=torch.float32)[None,None],size=(self.image_height,self.image_width),mode="bilinear",align_corners=False)[0,0]
+        else:
+            return self.depth_gt
+    @property
+    def get_normal_gt(self):
+        if isinstance(self.normal_gt,str):
+            return torch.nn.functional.interpolate(torch.tensor(np.array(np.load(self.normal_gt)), dtype=torch.float32)[None],size=(self.image_height,self.image_width),mode="bilinear",align_corners=False)[0]
+        else:
+            return self.normal_gt
+    @property
+    def get_alpha_gt(self):
+        if isinstance(self.alpha_gt,str):
+            alpha_gt = torch.nn.functional.interpolate(torch.tensor(np.array(Image.open(self.alpha_gt)), dtype=torch.float32)[None,None],size=(self.image_height,self.image_width),mode="nearest")[0,0]
+            alpha_gt = (alpha_gt==0).float()
+            return alpha_gt
+        else:
+            if self.alpha_gt is not None:
+                return  (self.alpha_gt==0).float()
+            return self.alpha_gt
+    @property
+    def get_extra_attrs_gt(self):
+        if isinstance(self.extra_attrs_gt,str):
+            return torch.nn.functional.interpolate(torch.tensor(np.array(np.load(self.extra_attrs_gt)), dtype=torch.int16)[None,None].float(),size=(self.image_height,self.image_width),mode="nearest")[0,0].long()
+        else:
+            return self.extra_attrs_gt

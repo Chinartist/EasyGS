@@ -23,17 +23,21 @@ import pycolmap
 from copy import deepcopy
 from rich import print
 from rich.progress import Progress,track, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn,SpinnerColumn ,RenderableColumn,MofNCompleteColumn
+from torch.optim.lr_scheduler import LinearLR
 import wandb
 LearningRate =dict(
             position_lr_init = 0.00016,
             position_lr_final = 0.0000016,
             position_lr_delay_mult = 0.01,
-            position_lr_max_steps = 30_000,
-            cam_lr = 0.0016,
+            scaling_lr_init = 0.001,
+            scaling_lr_final = 0.0000016,
+            scaling_lr_delay_mult = 0.01,
+
+            cam_lr = 0.005,
             extra_attrs_lr=0.001,
             feature_lr = 0.0025,
             opacity_lr = 0.025,
-            scaling_lr = 0.0005,
+            
             rotation_lr = 0.001,
     )
 LossWeights = dict(
@@ -145,16 +149,13 @@ def batch_np_matrix_to_pycolmap_wo_track(
 class GSTrainer():
     def __init__(self,
                     #要么提供COLMAP路径，要么提供相机参数
+
                     colmap_path=None,
                     w2c=None,
                     intrinsics=None,
                     images=None,
                     xyz=None,
                     rgb=None,
-                    depths=None,
-                    normals=None,
-                    alphas=None,
-                    extra_attrs=None,
                     pretrained_path=None,
                     save_dir=None,
                     height=None,
@@ -166,6 +167,7 @@ class GSTrainer():
                     alphas_folder=None,
                     extra_attrs_folder=None,
                     #训练和测试设置
+                    preload=True,
                     add_skybox=False,
                     enable_densification=True,
                     enable_reset_opacity=True,
@@ -197,15 +199,18 @@ class GSTrainer():
                     save_interval=10_000,
                     eval_interval=1000,
                     opacity_reset_interval=3000,
-                   
+                    cam_update_from_iter=10000,
                     densify_from_iter=500,
                     densification_interval=100,
                     densify_until_iter=15_000,
+                    opacity_reset_until_iter=15_000,
                     densify_grad_threshold= 0.0002,
                     wandb_project="PPGS",
                     wandb_name="3dgs",
 
                  ):
+        lr_args["position_lr_max_steps"] = iterations
+        lr_args["scaling_lr_max_steps"] = densify_until_iter
         print(lr_args)
         print(loss_weights)
         
@@ -229,7 +234,7 @@ class GSTrainer():
                 images_folder = os.path.join(colmap_path, "images/")
             cam_infos_unsorted = readColmapCameras(
                 cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics,images_folder=images_folder,depths_folder=depths_folder,
-                normals_folder=normals_folder, alphas_folder=alphas_folder, extra_attrs_folder=extra_attrs_folder,Height=height, Width=width)
+                normals_folder=normals_folder, alphas_folder=alphas_folder, extra_attrs_folder=extra_attrs_folder,Height=height, Width=width,preload=preload)
             cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
             nerf_normalization = getNerfppNorm(cam_infos)
             bin_path = os.path.join(colmap_path, "sparse/0/points3D.bin")
@@ -245,7 +250,7 @@ class GSTrainer():
    
         elif w2c is not None and intrinsics is not None and (images is not None or (height is not None and width is not None)) and (xyz is not None or pretrained_path is not None):
             print("Using provided camera parameters.")
-            cam_infos_unsorted = readCameras(cam_extrinsics=w2c, cam_intrinsics=intrinsics, images=images, depths=depths, normals=normals, alphas=alphas, extra_attrs=extra_attrs, Height=height, Width=width)
+            cam_infos_unsorted = readCameras(cam_extrinsics=w2c, cam_intrinsics=intrinsics, images=images,  Height=height, Width=width,)
             cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
             nerf_normalization = getNerfppNorm(cam_infos)
             if xyz is not None:
@@ -294,7 +299,7 @@ class GSTrainer():
         else:
             print("enable_cam_update is set to True, cameras will be updated during training.")
             self.optimizer_cam = torch.optim.Adam(cams.parameters(), lr=lr_args["cam_lr"])
-
+            self.scheduler_cam = LinearLR(self.optimizer_cam, start_factor=1.0, end_factor=0.01, total_iters=iterations-cam_update_from_iter)
         #print一些训练设置
         if not enable_densification:
             print("enable_densification is set to False, densification will not be performed during training.")
@@ -306,11 +311,7 @@ class GSTrainer():
         gaussians.training_setup(lr_args)
         if gaussians.skyboxer is not None:
             lr_skyboxer = {k:v for k,v in lr_args.items()}
-            lr_skyboxer["feature_lr"] = 0.00005
-            lr_skyboxer["extra_attrs_lr"] = 0.   
-            lr_skyboxer["opacity_lr"] = 0.
-            # lr_skyboxer["rotation_lr"] = 0.0
-            # lr_skyboxer["scaling_lr"] = 0.0
+            lr_skyboxer["extra_attrs_lr"] = 0. 
             gaussians.skyboxer.training_setup(lr_skyboxer)
 
         #初始化参数
@@ -324,12 +325,14 @@ class GSTrainer():
         self.enable_save_rendered_alpha = enable_save_rendered_alpha
         self.enable_save_rendered_extra_attrs= enable_save_rendered_extra_attrs
         self.enable_save_skybox = enable_save_skybox
+        self.cam_update_from_iter = cam_update_from_iter
         self.densify_from_iter = densify_from_iter
         self.densification_interval = densification_interval
         self.opacity_reset_interval = opacity_reset_interval
        
         self.densify_grad_threshold = densify_grad_threshold
         self.densify_until_iter = densify_until_iter
+        self.opacity_reset_until_iter = opacity_reset_until_iter
         self.iterations = iterations
 
         self.save_interval = save_interval
@@ -378,25 +381,42 @@ class GSTrainer():
             render_pkg = render(viewpoint_cam, self.gaussians, self.background)
             image, viewspace_point_tensor, visibility_filter = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"]          
             depth,normals,alpha, extra_attrs = render_pkg["depth"], render_pkg["normals"], render_pkg["alpha"], render_pkg["extra_attrs"]
-            gt_image = viewpoint_cam.image_gt.cuda()
-            Ll1 = l1_loss(image, gt_image)
-            ssim_value = ssim(image, gt_image)
+
+            image_gt = viewpoint_cam.get_image_gt
+            depth_gt = viewpoint_cam.get_depth_gt
+            normal_gt = viewpoint_cam.get_normal_gt
+            alpha_gt = viewpoint_cam.get_alpha_gt
+            extra_attrs_gt = viewpoint_cam.get_extra_attrs_gt
+
+            image_gt = image_gt.cuda()
+            if alpha_gt is not None:
+                alpha_gt = alpha_gt.cuda()
+                image = image*(1-alpha_gt[None])+image_gt*alpha_gt[None]
+            Ll1 = l1_loss(image, image_gt)
+            ssim_value = ssim(image, image_gt)
 
             loss = Ll1 * self.loss_weights["rgb_l1_weight"] + (1.0 - ssim_value) * self.loss_weights["rgb_ssim_weight"]
-            if viewpoint_cam.depth_gt is not None:
-                depth_gt = viewpoint_cam.depth_gt.cuda()
+            
+            if depth_gt is not None:
+                depth_gt = depth_gt.cuda()
                 depth_loss = torch.nn.functional.mse_loss(depth, depth_gt)
                 loss += depth_loss* self.loss_weights["depth_weight"]
-            if viewpoint_cam.normal_gt is not None:
-                normal_gt = viewpoint_cam.normal_gt.cuda()
+        
+            
+            if normal_gt is not None:
+                normal_gt = normal_gt.cuda()
                 normals_loss = torch.nn.functional.mse_loss(normals, normal_gt)
                 loss += normals_loss * self.loss_weights["normals_weight"]
-            if viewpoint_cam.alpha_gt is not None:
-                alpha_gt = viewpoint_cam.alpha_gt.cuda()
-                alpha_loss =((alpha_gt==0).float()*alpha).mean()
+        
+            
+            if alpha_gt is not None:
+                alpha = alpha.cuda()
+                alpha_loss =(alpha_gt*alpha).mean()
                 loss += alpha_loss * self.loss_weights["alpha_weight"]
-            if viewpoint_cam.extra_attrs_gt is not None:
-                extra_attrs_gt = viewpoint_cam.extra_attrs_gt.cuda()
+        
+            
+            if extra_attrs_gt is not None:
+                extra_attrs = extra_attrs.cuda()
                 extra_attrs_loss = torch.nn.functional.cross_entropy(extra_attrs[None], extra_attrs_gt[None])
                 loss += extra_attrs_loss * self.loss_weights["extra_attrs_weight"]
             
@@ -409,9 +429,10 @@ class GSTrainer():
             if self.gaussians.skyboxer is not None:
                 self.gaussians.skyboxer.optimizer.step()
                 self.gaussians.skyboxer.optimizer.zero_grad(set_to_none = True)
-            if self.optimizer_cam is not None:
+            if self.optimizer_cam is not None and iteration >self.cam_update_from_iter:
                 self.optimizer_cam.step()
                 self.optimizer_cam.zero_grad(set_to_none = True)
+                self.scheduler_cam.step()
              
             
             if  ((iteration+1) % self.save_interval == 0) or (iteration == self.iterations - 1) or iteration == 0:
@@ -435,10 +456,10 @@ class GSTrainer():
                     
                     self.gaussians.add_densification_stats(viewspace_point_tensor_grad, visibility_filter)
                     if iteration > self.densify_from_iter and (iteration+1) % self.densification_interval == 0:
-                        self.gaussians.densify_and_prune(self.densify_grad_threshold, 0.005,)
+                        self.gaussians.densify_and_prune(self.densify_grad_threshold, 0.009,)
 
-                    if (iteration+1) % self.opacity_reset_interval == 0 and self.enable_reset_opacity:
-                        self.gaussians.reset_opacity()
+                if (iteration+1) % self.opacity_reset_interval == 0 and iteration < self.opacity_reset_until_iter and self.enable_reset_opacity:
+                    self.gaussians.reset_opacity()
     @torch.no_grad()
     def eval(self,iteration=0):
         self.pbar.reset(self.eval_task)
@@ -451,10 +472,10 @@ class GSTrainer():
             image = render_pkg["render"]
             depth,normals,alpha, extra_attrs = render_pkg["depth"], render_pkg["normals"], render_pkg["alpha"], render_pkg["extra_attrs"]
             self.save_outputs(render_pkg,viewpoint_cam,iteration)
-            gt_image = viewpoint_cam.image_gt.cuda()
-            Ll1 = l1_loss(image, gt_image).item()
-            ssim_value = ssim(image, gt_image).item()
-            psnr_value = psnr(image, gt_image).mean().item()
+            image_gt = viewpoint_cam.get_image_gt.cuda()
+            Ll1 = l1_loss(image, image_gt).item()
+            ssim_value = ssim(image, image_gt).item()
+            psnr_value = psnr(image, image_gt).mean().item()
             l1_record.append(Ll1)
             ssim_record.append(ssim_value)
             psnr_record.append(psnr_value)
@@ -519,7 +540,7 @@ class GSTrainer():
             extr = cam.world_view_transform.detach().cpu().transpose(0, 1).numpy()[:3, :4]
             extrinsics.append(extr)
             if save_image:
-                image = (cam.image_gt * 255).clamp(0, 255).byte().permute(1, 2, 0).cpu().numpy()
+                image = (cam.get_image_gt * 255).clamp(0, 255).byte().permute(1, 2, 0).cpu().numpy()
                 image = Image.fromarray(image)
                 image.save(os.path.join(save_dir, "images", f"{cam.image_name}"))
         intrinsics = np.stack(intrinsics, axis=0)

@@ -47,7 +47,7 @@ def getNerfppNorm(cam_info):
 
     return {"translate": translate, "radius": radius}
 
-def readColmapCameras(cam_extrinsics, cam_intrinsics,Height,Width,images_folder=None,depths_folder=None, normals_folder=None, alphas_folder=None, extra_attrs_folder=None):
+def readColmapCameras(cam_extrinsics, cam_intrinsics,Height,Width,images_folder=None,depths_folder=None, normals_folder=None, alphas_folder=None, extra_attrs_folder=None,preload=True):
     cam_infos = []
     for idx, key in enumerate(cam_extrinsics):
         sys.stdout.write('\r')
@@ -72,22 +72,14 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics,Height,Width,images_folder=
         else:
             image_path =os.path.join(images_folder, extr.name)
             image_name =os.path.basename(image_path)
-        if  os.path.exists(image_path):
-            image = Image.open(image_path)
-        else:
-            image = np.zeros((height, width, 3), dtype=np.uint8)  # Placeholder if image not found
-            image = Image.fromarray(image)
-        if Height is not None and Width is not None:
-            image = image.resize((Width, Height), Image.LANCZOS)
-
+        
+        image = image_path
         endwith = extr.name.split('.')[-1]
-        depth = np.load(os.path.join(depths_folder, extr.name.replace(endwith, "npy"))) if depths_folder else None
-        normal = np.load(os.path.join(normals_folder, extr.name.replace(endwith, "npy"))) if normals_folder else None
-        try:
-            alpha = np.load(os.path.join(alphas_folder, extr.name.replace(endwith, "npy")))
-        except:
-            alpha = np.array(Image.open(os.path.join(alphas_folder, extr.name.replace(endwith, "png")))) if alphas_folder else None
-        extra_attrs = np.load(os.path.join(extra_attrs_folder, extr.name.replace(endwith, "npy"))) if extra_attrs_folder else None
+        depth = os.path.join(depths_folder, extr.name.replace(endwith, "npy")) if depths_folder else None
+        normal = os.path.join(normals_folder, extr.name.replace(endwith, "npy")) if normals_folder else None
+        alpha = os.path.join(alphas_folder, extr.name.replace(endwith, "png")) if alphas_folder else None
+        extra_attrs = os.path.join(extra_attrs_folder, extr.name.replace(endwith, "npy")) if extra_attrs_folder else None
+
         R = qvec2rotmat(extr.qvec)
         T = np.array(extr.tvec)
 
@@ -105,25 +97,17 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics,Height,Width,images_folder=
             assert False, "Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
 
         
-        cam_info = Camera(idx=idx, R=R, T=T, FoVx=FovX, FoVy=FovY,focal_length_x=focal_length_x,focal_length_y=focal_length_y,image=image,depth=depth,
+        cam_info = Camera(idx=idx, R=R, T=T, FoVx=FovX, FoVy=FovY,focal_length_x=focal_length_x,focal_length_y=focal_length_y,height=height,width=width,image=image,depth=depth,
                           normal=normal, alpha=alpha, extra_attrs=extra_attrs,
-                            image_path=image_path, image_name=image_name,)
+                            image_path=image_path, image_name=image_name,preload=preload)
         cam_infos.append(cam_info)
 
     sys.stdout.write('\n')
     return cam_infos
-def readCameras(cam_extrinsics, cam_intrinsics,Height,Width,images,depths, normals, alphas, extra_attrs):
+def readCameras(cam_extrinsics, cam_intrinsics,Height,Width,images):
     cam_infos = []
     if images is None:
         images = np.zeros((len(cam_extrinsics), Height, Width, 3), dtype=np.uint8)  # Placeholder if images not provided
-    if depths is None:
-        depths = [None] * len(cam_extrinsics)
-    if normals is None:
-        normals = [None] * len(cam_extrinsics)
-    if alphas is None:
-        alphas = [None] * len(cam_extrinsics)
-    if extra_attrs is None:
-        extra_attrs = [None] * len(cam_extrinsics)
     for idx in range(len(cam_extrinsics)):
         
         
@@ -163,9 +147,9 @@ def readCameras(cam_extrinsics, cam_intrinsics,Height,Width,images,depths, norma
         focal_length_y = intr[1, 1] * scale_height
         FovX = focal2fov(focal_length_x, width)
         FovY = focal2fov(focal_length_y, height)
-        cam_info = Camera(idx=idx, R=R, T=T, FoVx=FovX, FoVy=FovY,focal_length_x=focal_length_x,focal_length_y=focal_length_y,image=image,depth=depths[idx],
-                          normal=normals[idx], alpha=alphas[idx], extra_attrs=extra_attrs[idx],
-                            image_path=image_path, image_name=image_name)
+        cam_info = Camera(idx=idx, R=R, T=T, FoVx=FovX, FoVy=FovY,focal_length_x=focal_length_x,focal_length_y=focal_length_y,height=height,width=width,image=image,depth=None,
+                          normal=None, alpha=None, extra_attrs=None,
+                            image_path=image_path, image_name=image_name,preload=True)
         cam_infos.append(cam_info)
 
     sys.stdout.write('\n')

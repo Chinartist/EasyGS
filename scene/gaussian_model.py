@@ -201,7 +201,7 @@ class GaussianModel():
             {'params': [self._features_dc], 'lr': lr["feature_lr"], "name": "f_dc"},
             {'params': [self._features_rest], 'lr': lr["feature_lr"] / 20.0, "name": "f_rest"},
             {'params': [self._opacity], 'lr': lr["opacity_lr"], "name": "opacity"},
-            {'params': [self._scaling], 'lr': lr["scaling_lr"], "name": "scaling"},
+            {'params': [self._scaling], 'lr': lr["scaling_lr_init"], "name": "scaling"},
             {'params': [self._rotation], 'lr': lr["rotation_lr"], "name": "rotation"}
         ]
 
@@ -212,7 +212,10 @@ class GaussianModel():
                                                     lr_final=lr['position_lr_final']*self.scene_extent,
                                                     lr_delay_mult=lr['position_lr_delay_mult'],
                                                     max_steps=lr['position_lr_max_steps'])
-        
+        self.scaling_scheduler_args = get_expon_lr_func(lr_init=lr['scaling_lr_init'],
+                                                    lr_final=lr['scaling_lr_final'],
+                                                    lr_delay_mult=lr['scaling_lr_delay_mult'],
+                                                    max_steps=lr['scaling_lr_max_steps'])
 
     def update_learning_rate(self, iteration):
         ''' Learning rate scheduling per step '''
@@ -221,6 +224,10 @@ class GaussianModel():
         for param_group in self.optimizer.param_groups:
             if param_group["name"] == "xyz":
                 lr = self.xyz_scheduler_args(iteration)
+                param_group['lr'] = lr
+                return lr
+            if param_group["name"] == "scaling":
+                lr = self.scaling_scheduler_args(iteration)
                 param_group['lr'] = lr
                 return lr
 
