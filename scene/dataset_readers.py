@@ -57,6 +57,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics,Height,Width,images_folder=
 
         extr = cam_extrinsics[key]
         intr = cam_intrinsics[extr.camera_id]
+        extr_name = extr.name
         height = intr.height
         width = intr.width
         scale_height = 1.0
@@ -66,19 +67,20 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics,Height,Width,images_folder=
             scale_width = Width / width
             height = Height
             width = Width
-        if os.path.exists(extr.name):
-            image_path = extr.name
-            image_name = os.path.basename(image_path)
+        if os.path.exists(extr_name):
+            image_name = os.path.basename(extr_name)
+            image_path = extr_name
         else:
-            image_path =os.path.join(images_folder, extr.name)
-            image_name =os.path.basename(image_path)
+            image_name =os.path.basename(extr_name)
+            image_path =os.path.join(images_folder, image_name)
+            
         
         image = image_path
-        endwith = extr.name.split('.')[-1]
-        depth = os.path.join(depths_folder, extr.name.replace(endwith, "npy")) if depths_folder else None
-        normal = os.path.join(normals_folder, extr.name.replace(endwith, "npy")) if normals_folder else None
-        alpha = os.path.join(alphas_folder, extr.name.replace(endwith, "png")) if alphas_folder else None
-        extra_attrs = os.path.join(extra_attrs_folder, extr.name.replace(endwith, "npy")) if extra_attrs_folder else None
+        endwith = image_name.split('.')[-1]
+        depth = os.path.join(depths_folder, image_name.replace(endwith, "npy")) if depths_folder else None
+        normal = os.path.join(normals_folder, image_name.replace(endwith, "npy")) if normals_folder else None
+        alpha = os.path.join(alphas_folder, image_name.replace(endwith, "png")) if alphas_folder else None
+        extra_attrs = os.path.join(extra_attrs_folder, image_name.replace(endwith, "npy")) if extra_attrs_folder else None
 
         R = qvec2rotmat(extr.qvec)
         T = np.array(extr.tvec)
