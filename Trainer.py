@@ -245,6 +245,8 @@ class GSTrainer():
                 xyz, rgb, _ = read_points3D_text(txt_path)
             if rgb.max() > 1.0:
                 rgb = rgb / 255.0
+            if len(cam_infos) == 1:
+                nerf_normalization["radius"]=np.max(np.linalg.norm(xyz-np.mean(xyz,axis=0),axis=1))*1.1
             gaussians.create_from_pcd(xyz, rgb,  nerf_normalization["radius"],add_skybox,skybox_points = skybox_points,skybox_radius_scale=skybox_radius_scale)
             cams = nn.ModuleList(cam_infos)
    
@@ -258,6 +260,8 @@ class GSTrainer():
                     rgb = np.ones_like(xyz, dtype=np.float32)* 0.5
                 if rgb.max() > 1.0:
                     rgb = rgb / 255.0
+                if len(cam_infos) == 1:
+                    nerf_normalization["radius"]=np.max(np.linalg.norm(xyz-np.mean(xyz,axis=0),axis=1))*1.1
                 gaussians.create_from_pcd(xyz, rgb, nerf_normalization["radius"],add_skybox,skybox_points = skybox_points,skybox_radius_scale=skybox_radius_scale)
             cams = nn.ModuleList(cam_infos)
         else:
