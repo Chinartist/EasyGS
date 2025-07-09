@@ -62,7 +62,8 @@ class Camera(nn.Module):
         self.focal_length_x = focal_length_x
         self.focal_length_y = focal_length_y
         self.image_name = image_name
-        self.image_path = image_path    
+        self.image_path = image_path 
+        self.delta_t = torch.tensor([0,0,0],dtype=torch.float32).cuda()
         if preload and isinstance(image,str):
             self.image_gt = to_tensor(Image.open(image).resize((width,height),Image.LANCZOS))
         else:
@@ -110,7 +111,7 @@ class Camera(nn.Module):
         R = qvec2rotmat(torch.nn.functional.normalize(self.qvec,dim=0))
         w2c = torch.zeros((4, 4), dtype=torch.float32, device=self.qvec.device)
         w2c[:3, :3] = R
-        w2c[:3, 3] = self.tvec
+        w2c[:3, 3] = self.tvec+self.delta_t
         w2c[3, 3] = 1.0
         return w2c.transpose(0, 1)
     @property
