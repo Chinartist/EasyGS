@@ -346,6 +346,7 @@ class GSTrainer():
         self.sh_increase_interval = sh_increase_interval
         self.background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
         self.loss_weights = loss_weights
+        self.wandb_project = wandb_project
         #初始化进度条
         pbar = Progress(TextColumn("[progress.description]{task.description}"),
             BarColumn(),
@@ -363,11 +364,12 @@ class GSTrainer():
         for key, value in self.__dict__.items():
             if isinstance(value, str) or isinstance(value, int):
                 all_args[key] = value
-        wandb.init(config=all_args,
-               project=wandb_project,
-               name=wandb_name,
-               dir=save_dir,
-               )
+        if wandb_project is not None:
+            wandb.init(config=all_args,
+                project=wandb_project,
+                name=wandb_name,
+                dir=save_dir,
+                )
         
     def train(self,):
         indices_random = deepcopy(self.indices_for_train)
@@ -487,7 +489,8 @@ class GSTrainer():
         l1_mean = sum(l1_record) / len(l1_record)
         ssim_mean = sum(ssim_record) / len(ssim_record)
         psnr_mean = sum(psnr_record) / len(psnr_record) 
-        wandb.log({"PSNR": psnr_mean, "SSIM": ssim_mean, "L1": l1_mean},step=iteration)
+        if self.wandb_project is not None:
+            wandb.log({"PSNR": psnr_mean, "SSIM": ssim_mean, "L1": l1_mean},step=iteration)
         print(f"Evaluation results of {iteration}: PSNR: {psnr_mean:.4f}, SSIM: {ssim_mean:.4f}, L1: {l1_mean:.4f}")
         return None
     def save_outputs(self,render_pkg,viewpoint_cam,iteration):
