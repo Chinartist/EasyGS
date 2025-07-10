@@ -6,8 +6,8 @@ pip install wandb
 ```
 ## How to train with COLMAP format data
 ``` python
-from PPGS.Trainer import GSTrainer, LearningRate, LossWeights
-trainer = GSTrainer(
+from EasyGS import GSer, LearningRate, LossWeights
+trainer = GSer(
         #要么提供COLMAP路径，要么提供相机参数
         colmap_path="/home/tangyuan/project/data/aligned",
         images_folder="/home/tangyuan/project/data/images",
@@ -58,9 +58,9 @@ trainer.train()
 ```
 ## How to train with custom data
 ```python
-from PPGS.Trainer import GSTrainer, LearningRate, LossWeights
+from EasyGS import GSer, LearningRate, LossWeights
 #w2c and intrinsics maybe come from vggt, dust3r or other methods
-trainer = GSTrainer(
+trainer = GSer(
     w2c=w2c.cpu().numpy(),
     intrinsics=intrinsics_pinhole.cpu().numpy(),
     images=images,
@@ -73,8 +73,8 @@ trainer.save_colmap(trainer.save_dir, save_image=True)
 ## How to visualize only
 ```python
 
-from PPGS.Trainer import GSTrainer
-trainer = GSTrainer(
+from EasyGS import GSer
+trainer = GSer(
     w2c=w2c.cpu().numpy(),
     intrinsics=intrinsics_pinhole.cpu().numpy(),
     height=height,#if you don't provide images, you need to set height and width corrosponding to the intrinsics

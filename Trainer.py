@@ -146,7 +146,7 @@ def batch_np_matrix_to_pycolmap_wo_track(
         track.add_element(1,1)
         track.add_element(1,1)
     return reconstruction
-class GSTrainer():
+class GSer():
     def __init__(self,
                     #要么提供COLMAP路径，要么提供相机参数
 
@@ -569,7 +569,7 @@ if __name__ == "__main__":
     # LearningRate["position_lr_init"]=0
     # LearningRate["position_lr_final"]=0
     # LearningRate["position_lr_delay_mult"]=0.
-    trainer = GSTrainer(
+    trainer = GSer(
         #要么提供COLMAP路径，要么提供相机参数
         colmap_path="/home/tangyuan/project/data/aligned",
         images_folder="/home/tangyuan/project/data/images",
