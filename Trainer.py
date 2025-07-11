@@ -182,6 +182,7 @@ class GSer():
 
                     #训练参数
                     verbose =True,
+                    min_opacity=0.005,
                     percent_dense=0.01,
                     skybox_points = 100_000,skybox_radius_scale=10.0,
                     extra_attrs_dim = 0,
@@ -321,6 +322,7 @@ class GSer():
         #初始化参数
         self.gaussians = gaussians
         self.cams = cams
+        self.min_opacity = min_opacity
         self.enable_densification = enable_densification
         self.enable_reset_opacity = enable_reset_opacity
         self.enable_save_rendered_images = enable_save_rendered_images
@@ -462,7 +464,7 @@ class GSer():
                     
                     self.gaussians.add_densification_stats(viewspace_point_tensor_grad, visibility_filter)
                     if iteration > self.densify_from_iter and (iteration+1) % self.densification_interval == 0:
-                        self.gaussians.densify_and_prune(self.densify_grad_threshold, 0.005,)
+                        self.gaussians.densify_and_prune(self.densify_grad_threshold, self.min_opacity,)
 
                 if (iteration+1) % self.opacity_reset_interval == 0 and iteration < self.opacity_reset_until_iter and self.enable_reset_opacity:
                     self.gaussians.reset_opacity()
