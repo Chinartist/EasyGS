@@ -508,13 +508,14 @@ class GSer():
             rgb.save(save_path)
         if self.enable_save_rendered_depth:
             os.makedirs(os.path.join(self.save_dir, f"{iteration}",f"rendered_depth"), exist_ok=True)
-            save_path = os.path.join(self.save_dir,f"{iteration}",f"rendered_depth", f"{image_name}.png")
+            os.makedirs(os.path.join(self.save_dir, f"{iteration}",f"rendered_depth_wcolor"), exist_ok=True)
             depth = depth.float().detach().cpu().numpy()
+            np.save(os.path.join(self.save_dir, f"{iteration}",f"rendered_depth", f"{image_name}.npy"),depth)
             depth = (depth - depth.min()) / (depth.max() - depth.min()) * 255.0
             depth = depth.astype(np.uint8)
             depth = (CMAP(depth)[:, :, :3])[:, :, ::-1]
             depth = Image.fromarray((depth * 255).astype(np.uint8))
-            depth.save(save_path)
+            depth.save(os.path.join(self.save_dir, f"{iteration}",f"rendered_depth_wcolor", f"{image_name}.png"))
         if self.enable_save_rendered_normals:
             os.makedirs(os.path.join(self.save_dir, f"{iteration}",f"rendered_normals"), exist_ok=True)
             save_path = os.path.join(self.save_dir,f"{iteration}",f"rendered_normals", f"{image_name}.npy")
@@ -569,51 +570,3 @@ class GSer():
         )
         rec.write_text(os.path.join(save_dir, "sparse/0/"))
    
-if __name__ == "__main__":
-    # LearningRate["position_lr_init"]=0
-    # LearningRate["position_lr_final"]=0
-    # LearningRate["position_lr_delay_mult"]=0.
-    trainer = GSer(
-        #要么提供COLMAP路径，要么提供相机参数
-        colmap_path="/home/tangyuan/project/data/aligned",
-        images_folder="/home/tangyuan/project/data/images",
-        # pretrained_path="/home/tangyuan/project/data/static_scene/merged.ply",#pretrained model path, if you want to use a pretrained model, set this. pretrained_path can also be ply file
-        save_dir="/home/tangyuan/project/data/3dgs",
-        height=450,#if you want to resize the image, you need to set this
-        width=800,
-        #训练和测试设置
-        add_skybox=True,
-        enable_save_skybox=False,
-        enable_densification=True,
-        enable_reset_opacity=True,
-        enable_train_all=True,
-        enable_cam_update=True,#if you want to update the camera parameters, set this to True
-        enable_save_rendered_images=True,
-        enable_save_rendered_depth=False,
-        enable_save_rendered_normals=False,
-        enable_save_rendered_alpha=False,
-        enable_save_rendered_extra_attrs=False,
-        verbose=True,
-        #训练参数
-        percent_dense = 0.001,
-        extra_attrs_dim=0,
-        eval_rate=0.1,
-        lr_args=LearningRate,
-        loss_weights=LossWeights,
-       
-        init_degree=0,
-        max_sh_degree=3,
-        bg_color = [1, 1, 1],
-        sh_increase_interval = 1000,
-        densify_from_iter=0,
-        densify_until_iter=100_000,
-        densification_interval=100,
-        opacity_reset_interval=3000,
-        iterations=100_000,
-        save_interval=3000,
-        eval_interval=3000,
-        wandb_project="PPGS",
-        wandb_name="3dgs")
-    # trainer.save_colmap(trainer.save_dir, save_image=True)
-    trainer.train()
-    print("Training finished.")
