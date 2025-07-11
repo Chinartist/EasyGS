@@ -410,7 +410,7 @@ class GaussianModel():
         self.denom = torch.zeros((self._xyz.shape[0], 1), device="cuda")
     
 
-    def densify_and_split(self, grads, grad_threshold, N=2):
+    def densify_and_split(self, grads, grad_threshold, N=4):
         n_init_points = self._xyz.shape[0]
         # Extract points that satisfy the gradient condition
         #梯度过大 且 椭球scale小于 场景大小*percent_dense（0.01） -> 分裂一份，xyz取正态分布，scale变小0.8*N倍
@@ -459,12 +459,12 @@ class GaussianModel():
  
         self.densification_postfix(new_xyz,new_extra_attrs, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation)
 
-    def densify_and_prune(self, max_grad, min_opacity,):
+    def densify_and_prune(self, max_grad, min_opacity,N):
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
 
         self.densify_and_clone(grads, max_grad,)
-        self.densify_and_split(grads, max_grad,)
+        self.densify_and_split(grads, max_grad,N)
         
         #不透明度小于阈值以及scale大于self.percent_dense* scene_extent 均被删除
         prune_mask = (self.opacity_activation(self._opacity)< min_opacity).squeeze()
