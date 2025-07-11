@@ -106,6 +106,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics,Height,Width,images_folder=
 
     sys.stdout.write('\n')
     return cam_infos
+from torchvision.transforms.functional import to_tensor
 def readCameras(cam_extrinsics, cam_intrinsics,Height,Width,images):
     cam_infos = []
     if images is None:
@@ -149,6 +150,7 @@ def readCameras(cam_extrinsics, cam_intrinsics,Height,Width,images):
         focal_length_y = intr[1, 1] * scale_height
         FovX = focal2fov(focal_length_x, width)
         FovY = focal2fov(focal_length_y, height)
+        image = to_tensor(image)
         cam_info = Camera(idx=idx, R=R, T=T, FoVx=FovX, FoVy=FovY,focal_length_x=focal_length_x,focal_length_y=focal_length_y,height=height,width=width,image=image,depth=None,
                           normal=None, alpha=None, extra_attrs=None,
                             image_path=image_path, image_name=image_name,preload=True)
