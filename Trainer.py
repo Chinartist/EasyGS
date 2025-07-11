@@ -29,7 +29,7 @@ LearningRate =dict(
             position_lr_init = 0.00016,
             position_lr_final = 0.0000016,
             position_lr_delay_mult = 0.01,
-            scaling_lr_init = 0.001,
+            scaling_lr_init = 0.005,
             scaling_lr_final = 0.0000016,
             scaling_lr_delay_mult = 0.01,
 
@@ -462,7 +462,7 @@ class GSer():
                     
                     self.gaussians.add_densification_stats(viewspace_point_tensor_grad, visibility_filter)
                     if iteration > self.densify_from_iter and (iteration+1) % self.densification_interval == 0:
-                        self.gaussians.densify_and_prune(self.densify_grad_threshold, 0.009,)
+                        self.gaussians.densify_and_prune(self.densify_grad_threshold, 0.005,)
 
                 if (iteration+1) % self.opacity_reset_interval == 0 and iteration < self.opacity_reset_until_iter and self.enable_reset_opacity:
                     self.gaussians.reset_opacity()
