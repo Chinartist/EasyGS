@@ -488,6 +488,10 @@ class GSer():
             depth,normals,alpha, extra_attrs = render_pkg["depth"], render_pkg["normals"], render_pkg["alpha"], render_pkg["extra_attrs"]
             self.save_outputs(render_pkg,viewpoint_cam,iteration)
             image_gt = viewpoint_cam.get_image_gt.cuda()
+            alpha_gt = viewpoint_cam.get_alpha_gt
+            if alpha_gt is not None:
+                alpha_gt = alpha_gt.cuda()
+                image = image*(1-alpha_gt[None])+image_gt*alpha_gt[None]
             Ll1 = l1_loss(image, image_gt).item()
             ssim_value = ssim(image, image_gt).item()
             psnr_value = psnr(image, image_gt).mean().item()
