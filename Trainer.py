@@ -241,15 +241,20 @@ class GSer():
             nerf_normalization = getNerfppNorm(cam_infos)
             bin_path = os.path.join(colmap_path, "sparse/0/points3D.bin")
             txt_path = os.path.join(colmap_path, "sparse/0/points3D.txt")
-            try:
+            
+            if os.path.exists(bin_path):
                 xyz, rgb, _ = read_points3D_binary(bin_path)
-            except:
+            elif os.path.exists(txt_path):
                 xyz, rgb, _ = read_points3D_text(txt_path)
-            if rgb.max() > 1.0:
-                rgb = rgb / 255.0
-            if len(cam_infos) == 1:
-                nerf_normalization["radius"]=np.max(np.linalg.norm(xyz-np.mean(xyz,axis=0),axis=1))*1.1
-            gaussians.create_from_pcd(xyz, rgb,  nerf_normalization["radius"],add_skybox,skybox_points = skybox_points,skybox_radius_scale=skybox_radius_scale)
+            else:
+                xyz =None
+                rgb = None
+            if xyz is not None:
+                if rgb.max() > 1.0:
+                    rgb = rgb / 255.0
+                if len(cam_infos) == 1:
+                    nerf_normalization["radius"]=np.max(np.linalg.norm(xyz-np.mean(xyz,axis=0),axis=1))*1.1
+                gaussians.create_from_pcd(xyz, rgb,  nerf_normalization["radius"],add_skybox,skybox_points = skybox_points,skybox_radius_scale=skybox_radius_scale)
             cams = nn.ModuleList(cam_infos)
    
         elif w2c is not None and intrinsics is not None and (images is not None or (height is not None and width is not None)) and (xyz is not None or pretrained_path is not None):
