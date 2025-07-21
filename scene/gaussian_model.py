@@ -20,7 +20,7 @@ from plyfile import PlyData, PlyElement
 from utils.sh_utils import RGB2SH
 from simple_knn._C import distCUDA2
 from utils.general_utils import strip_symmetric, build_scaling_rotation
-
+from scene.cameras import qvec2rotmat
 
 class GaussianModel():
 
@@ -68,7 +68,7 @@ class GaussianModel():
     def get_scaling(self):
         if self.skyboxer is not None:
             return torch.cat([self.skyboxer.get_scaling, self.scaling_activation(self._scaling)], dim=0)
-        return self.scaling_activation(self._scaling)
+        return self.rslearner.rescale(self.scaling_activation(self._scaling))
     
     @property
     def get_rotation(self):
@@ -80,7 +80,7 @@ class GaussianModel():
     def get_xyz(self):
         if self.skyboxer is not None:
             return torch.cat([self.skyboxer.get_xyz, self._xyz], dim=0)
-        return self._xyz
+        return self.rslearner.rerotate(self._xyz)
     
     @property
     def get_extra_attrs(self):
@@ -191,10 +191,35 @@ class GaussianModel():
             
     def training_setup(self, lr
                        ):
- 
+        class RSLearner(nn.Module):
+            def __init__(self):
+                super().__init__()
+                
+                self.qvec = nn.Parameter(torch.tensor([1.,0.,0.,0.],device="cuda"),requires_grad=True)
+                self.tvec = nn.Parameter(torch.tensor([0.0,0.0,0.0],device="cuda"),requires_grad=True)
+                self.rescaler= nn.Parameter(torch.tensor(1.0,device="cuda"),requires_grad=True)
+                l = [
+               
+            {'params': [self.qvec], 'lr':  0.0001, "name": "rotation"},
+            {'params': [self.tvec], 'lr': 0.00016, "name": "xyz"},
+            {'params': [self.rescaler], 'lr': 0.0002, "name": "scaling"},
+                ]
+                self.optimizer = torch.optim.Adam(l,lr=0.0,eps=1e-15)
+            def rerotate(self,xyz):
+                center = torch.mean(xyz,dim=0).detach()
+                xyz = xyz-center
+                xyz = xyz*self.rescaler
+                R = qvec2rotmat(torch.nn.functional.normalize(self.qvec,dim=0))
+                R = R[None]#1,3,3
+                xyz = xyz[...,None]#N,3,1
+                xyz = R@xyz
+                xyz = xyz[...,0]+self.tvec+center
+                return xyz
+            def rescale(self,scaling):
+                return self.rescaler*scaling
         self.xyz_gradient_accum = torch.zeros((self._xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self._xyz.shape[0], 1), device="cuda")
-
+        self.rslearner = RSLearner()
         l = [
             {'params': [self._xyz], 'lr': lr["position_lr_init"] * self.scene_extent, "name": "xyz"},
             {'params': [self._extra_attrs], 'lr': lr["extra_attrs_lr"], "name": "extra_attrs"},

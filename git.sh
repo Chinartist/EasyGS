@@ -21,7 +21,7 @@ if [ -n "$(git status --porcelain)" ]; then
   git commit -m "$commit_message"
 
   # 推送到远程仓库
-  git push origin main  # 如果你的主分支不是 main，请替换为 master 或其他分支名
+  git push origin obj_rescale  # 如果你的主分支不是 main，请替换为 master 或其他分支名
 
   echo "Changes have been committed and pushed."
 else

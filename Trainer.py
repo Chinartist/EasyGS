@@ -438,7 +438,8 @@ class GSer():
             loss.backward()
             viewspace_point_tensor_grad = viewspace_point_tensor.grad
             
-    
+            self.gaussians.rslearner.optimizer.step()
+            self.gaussians.rslearner.optimizer.zero_grad(set_to_none = True)
             self.gaussians.optimizer.step()
             self.gaussians.optimizer.zero_grad(set_to_none = True)
             if self.gaussians.skyboxer is not None:
