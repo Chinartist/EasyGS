@@ -425,13 +425,13 @@ class GSer():
         
             
             if alpha_gt is not None:
-                alpha = alpha.cuda()
+                alpha_gt = alpha_gt.cuda()
                 alpha_loss =(alpha_gt*alpha).mean()
                 loss += alpha_loss * self.loss_weights["alpha_weight"]
         
             
             if extra_attrs_gt is not None:
-                extra_attrs = extra_attrs.cuda()
+                extra_attrs_gt = extra_attrs_gt.cuda()
                 extra_attrs_loss = torch.nn.functional.cross_entropy(extra_attrs[None], extra_attrs_gt[None])
                 loss += extra_attrs_loss * self.loss_weights["extra_attrs_weight"]
             
