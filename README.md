@@ -4,6 +4,25 @@
 pip install pycolmap==3.11
 pip install wandb
 ```
+
+## srcipts
+### 🎯 optimize_cam_para.py
+固定场景Gaussians不变，优化初始相机内参外参（R, t），提升位姿精度。
+
+关键参数：
+- pretrained_path
+- enable_freeze=True
+- enable_cam_update=True
+- save_colmap(path)
+
+### 🎯 fit_sh.py
+固定Gaussians其他参数，仅仅调整颜色
+
+关键参数：
+- pretrained_path
+- only_fit_sh = True
+
+
 ## How to train with COLMAP format data
 ``` python
 from EasyGS import GSer, LearningRate, LossWeights
