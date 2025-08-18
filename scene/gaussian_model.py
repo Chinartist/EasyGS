@@ -189,38 +189,45 @@ class GaussianModel():
             self.num_fixed_points += skybox_points
             self.skyboxer = skyboxer
             
-    def training_setup(self, lr
+    def training_setup(self, lr,freeze=False,only_fit_sh=False
                        ):
- 
+        
         self.xyz_gradient_accum = torch.zeros((self._xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self._xyz.shape[0], 1), device="cuda")
+        if freeze:
+            self.optimizer= None
+            return
+        else:
+            l = None
+            if only_fit_sh:
+                l = [
+                    {'params': [self._features_dc], 'lr': lr["feature_lr"], "name": "f_dc"},
+                    {'params': [self._features_rest], 'lr': lr["feature_lr"] / 20.0, "name": "f_rest"},
+                ]
+            else:
+                l = [
+                    {'params': [self._xyz], 'lr': lr["position_lr_init"] * self.scene_extent, "name": "xyz"},
+                    {'params': [self._extra_attrs], 'lr': lr["extra_attrs_lr"], "name": "extra_attrs"},
+                    {'params': [self._features_dc], 'lr': lr["feature_lr"], "name": "f_dc"},
+                    {'params': [self._features_rest], 'lr': lr["feature_lr"] / 20.0, "name": "f_rest"},
+                    {'params': [self._opacity], 'lr': lr["opacity_lr"], "name": "opacity"},
+                    {'params': [self._scaling], 'lr': lr["scaling_lr_init"], "name": "scaling"},
+                    {'params': [self._rotation], 'lr': lr["rotation_lr"], "name": "rotation"}
+                ]
 
-        l = [
-            {'params': [self._xyz], 'lr': lr["position_lr_init"] * self.scene_extent, "name": "xyz"},
-            {'params': [self._extra_attrs], 'lr': lr["extra_attrs_lr"], "name": "extra_attrs"},
-            {'params': [self._features_dc], 'lr': lr["feature_lr"], "name": "f_dc"},
-            {'params': [self._features_rest], 'lr': lr["feature_lr"] / 20.0, "name": "f_rest"},
-            {'params': [self._opacity], 'lr': lr["opacity_lr"], "name": "opacity"},
-            {'params': [self._scaling], 'lr': lr["scaling_lr_init"], "name": "scaling"},
-            {'params': [self._rotation], 'lr': lr["rotation_lr"], "name": "rotation"}
-        ]
+            self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
 
-        self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
-
-
-        self.xyz_scheduler_args = get_expon_lr_func(lr_init=lr['position_lr_init']*self.scene_extent,
-                                                    lr_final=lr['position_lr_final']*self.scene_extent,
-                                                    lr_delay_mult=lr['position_lr_delay_mult'],
-                                                    max_steps=lr['position_lr_max_steps'])
-        self.scaling_scheduler_args = get_expon_lr_func(lr_init=lr['scaling_lr_init'],
-                                                    lr_final=lr['scaling_lr_final'],
-                                                    lr_delay_mult=lr['scaling_lr_delay_mult'],
-                                                    max_steps=lr['scaling_lr_max_steps'])
+            self.xyz_scheduler_args = get_expon_lr_func(lr_init=lr['position_lr_init']*self.scene_extent,
+                                                        lr_final=lr['position_lr_final']*self.scene_extent,
+                                                        lr_delay_mult=lr['position_lr_delay_mult'],
+                                                        max_steps=lr['position_lr_max_steps'])
+            self.scaling_scheduler_args = get_expon_lr_func(lr_init=lr['scaling_lr_init'],
+                                                        lr_final=lr['scaling_lr_final'],
+                                                        lr_delay_mult=lr['scaling_lr_delay_mult'],
+                                                        max_steps=lr['scaling_lr_max_steps'])
 
     def update_learning_rate(self, iteration):
         ''' Learning rate scheduling per step '''
- 
-
         for param_group in self.optimizer.param_groups:
             if param_group["name"] == "xyz":
                 lr = self.xyz_scheduler_args(iteration)

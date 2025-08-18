@@ -32,12 +32,12 @@ LearningRate =dict(
             scaling_lr_init = 0.005,
             scaling_lr_final = 0.0000016,
             scaling_lr_delay_mult = 0.01,
-
+            qvec_lr = 0.001,
+            tvec_lr=0.05,
             cam_lr = 0.005,
             extra_attrs_lr=0.001,
             feature_lr = 0.0025,
             opacity_lr = 0.025,
-            
             rotation_lr = 0.001,
     )
 LossWeights = dict(
@@ -168,6 +168,8 @@ class GSer():
                     extra_attrs_folder=None,
                     #训练和测试设置
                     preload=True,
+                    enable_freeze=False,
+                    only_fit_sh=False,
                     add_skybox=False,
                     enable_densification=True,
                     enable_reset_opacity=True,
@@ -309,7 +311,17 @@ class GSer():
             self.optimizer_cam = None
         else:
             print("enable_cam_update is set to True, cameras will be updated during training.")
-            self.optimizer_cam = torch.optim.Adam(cams.parameters(), lr=lr_args["cam_lr"])
+            # self.optimizer_cam = torch.optim.Adam(cams.parameters(), lr=lr_args["cam_lr"])
+            qvec_params = []
+            tvec_params = []    
+            for cam in cams:
+                qvec_params.append(cam.qvec)
+                tvec_params.append(cam.tvec)        
+            self.optimizer_cam = torch.optim.Adam([
+                {'params': qvec_params, 'lr': lr_args["qvec_lr"]},  # 旋转参数的学习率
+                {'params': tvec_params, 'lr': lr_args["tvec_lr"]}   # 平移参数的学习率
+            ])
+
             self.scheduler_cam = LinearLR(self.optimizer_cam, start_factor=1.0, end_factor=0.01, total_iters=iterations-cam_update_from_iter)
         #print一些训练设置
         if not enable_densification:
@@ -319,7 +331,7 @@ class GSer():
         print(f"Model will be saved to {save_dir}")
         print(f"Scene extent: {gaussians.scene_extent}")
         #设置gs优化器
-        gaussians.training_setup(lr_args)
+        gaussians.training_setup(lr_args,freeze=enable_freeze,only_fit_sh=only_fit_sh)
         if gaussians.skyboxer is not None:
             lr_skyboxer = {k:v for k,v in lr_args.items()}
             lr_skyboxer["extra_attrs_lr"] = 0. 
@@ -331,6 +343,7 @@ class GSer():
         self.N_split = N_split
         self.min_opacity = min_opacity
         self.enable_densification = enable_densification
+        self.enable_freeze = enable_freeze
         self.enable_reset_opacity = enable_reset_opacity
         self.enable_save_rendered_images = enable_save_rendered_images
         self.enable_save_rendered_depth = enable_save_rendered_depth
@@ -384,8 +397,8 @@ class GSer():
         indices_random = deepcopy(self.indices_for_train)
         random.shuffle(indices_random)
         for iteration in range(self.iterations):
-
-            self.gaussians.update_learning_rate(iteration)
+            if self.enable_freeze is False:
+                self.gaussians.update_learning_rate(iteration)
             if (iteration+1) % self.sh_increase_interval == 0:
                 self.gaussians.oneupSHdegree()
             if len(indices_random)==0:
@@ -438,9 +451,9 @@ class GSer():
             loss.backward()
             viewspace_point_tensor_grad = viewspace_point_tensor.grad
             
-    
-            self.gaussians.optimizer.step()
-            self.gaussians.optimizer.zero_grad(set_to_none = True)
+            if self.enable_freeze is False:
+                self.gaussians.optimizer.step()
+                self.gaussians.optimizer.zero_grad(set_to_none = True)
             if self.gaussians.skyboxer is not None:
                 self.gaussians.skyboxer.optimizer.step()
                 self.gaussians.skyboxer.optimizer.zero_grad(set_to_none = True)
@@ -450,7 +463,8 @@ class GSer():
                 self.scheduler_cam.step()
              
             
-            if  ((iteration+1) % self.save_interval == 0) or (iteration == self.iterations - 1) or iteration == 0:
+            # if  ((iteration+1) % self.save_interval == 0) or (iteration == self.iterations - 1) or iteration == 0:
+            if  ((iteration+1) % self.save_interval == 0):
                     os.makedirs(os.path.join(self.save_dir, f"{iteration}"), exist_ok=True)
                     save_path = os.path.join(self.save_dir,f"{iteration}", f"model.ply")
                     self.gaussians.save_ply(save_path,self.enable_save_skybox)
