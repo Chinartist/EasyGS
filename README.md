@@ -13,6 +13,7 @@ pip install wandb
 - pretrained_path
 - enable_freeze=True
 - enable_cam_update=True
+- use_sift_loss=True
 - save_colmap(path)
 
 ### 🎯 fit_sh.py
