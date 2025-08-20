@@ -220,8 +220,8 @@ class GSer():
                  densify_until_iter=15_000,
                  opacity_reset_until_iter=15_000,
                  densify_grad_threshold=0.0002,
-                 wandb_project="PPGS",
-                 wandb_name="3dgs",
+                 wandb_project=None,
+                 wandb_name=None,
 
                  ):
         lr_args["position_lr_max_steps"] = iterations
