@@ -73,7 +73,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, Height, Width, images_fold
             image_name = os.path.basename(extr_name)
             image_path = extr_name
         elif os.path.exists(os.path.join(images_folder, extr_name)):
-            image_name = os.path.basename(extr_name)
+            image_name = extr_name
             image_path = os.path.join(images_folder, extr_name)
         else:
             image_name = os.path.basename(extr_name)

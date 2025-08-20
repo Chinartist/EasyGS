@@ -554,16 +554,17 @@ class GSer():
     def save_outputs(self, render_pkg, viewpoint_cam, iteration):
         rgb, depth, normals, alpha, extra_attrs = render_pkg["render"], render_pkg["depth"], render_pkg["normals"], \
         render_pkg["alpha"], render_pkg["extra_attrs"]
-        image_name = viewpoint_cam.image_name.split('.')[0]
+        endwith = "." + viewpoint_cam.image_name.split('.')[-1]
+        image_name = viewpoint_cam.image_name.replace(endwith, "")
         if self.enable_save_rendered_images:
-            os.makedirs(os.path.join(self.save_dir, f"{iteration}", f"rendered_images"), exist_ok=True)
+            os.makedirs(os.path.dirname(os.path.join(self.save_dir, f"{iteration}", f"rendered_images",image_name)), exist_ok=True)
             save_path = os.path.join(self.save_dir, f"{iteration}", f"rendered_images", f"{image_name}.png")
             rgb = (rgb * 255).clamp(0, 255).byte().permute(1, 2, 0).cpu().numpy()
             rgb = Image.fromarray(rgb)
             rgb.save(save_path)
         if self.enable_save_rendered_depth:
-            os.makedirs(os.path.join(self.save_dir, f"{iteration}", f"rendered_depth"), exist_ok=True)
-            os.makedirs(os.path.join(self.save_dir, f"{iteration}", f"rendered_depth_wcolor"), exist_ok=True)
+            os.makedirs(os.path.dirname(os.path.join(self.save_dir, f"{iteration}", f"rendered_depth",image_name)), exist_ok=True)
+            os.makedirs(os.path.dirname(os.path.join(self.save_dir, f"{iteration}", f"rendered_depth_wcolor",image_name)), exist_ok=True)
             depth = depth.float().detach().cpu().numpy()
             np.save(os.path.join(self.save_dir, f"{iteration}", f"rendered_depth", f"{image_name}.npy"), depth)
             depth = (depth - depth.min()) / (depth.max() - depth.min()) * 255.0
@@ -572,17 +573,17 @@ class GSer():
             depth = Image.fromarray((depth * 255).astype(np.uint8))
             depth.save(os.path.join(self.save_dir, f"{iteration}", f"rendered_depth_wcolor", f"{image_name}.png"))
         if self.enable_save_rendered_normals:
-            os.makedirs(os.path.join(self.save_dir, f"{iteration}", f"rendered_normals"), exist_ok=True)
+            os.makedirs(os.path.dirname(os.path.join(self.save_dir, f"{iteration}", f"rendered_normals",image_name)), exist_ok=True)
             save_path = os.path.join(self.save_dir, f"{iteration}", f"rendered_normals", f"{image_name}.npy")
             normals = normals.float().detach().cpu().numpy()
             np.save(save_path, normals)
         if self.enable_save_rendered_alpha:
-            os.makedirs(os.path.join(self.save_dir, f"{iteration}", f"rendered_alpha"), exist_ok=True)
+            os.makedirs(os.path.dirname(os.path.join(self.save_dir, f"{iteration}", f"rendered_alpha",image_name)), exist_ok=True)
             save_path = os.path.join(self.save_dir, f"{iteration}", f"rendered_alpha", f"{image_name}.npy")
             alpha = alpha.float().detach().cpu().numpy()
             np.save(save_path, alpha)
         if self.enable_save_rendered_extra_attrs:
-            os.makedirs(os.path.join(self.save_dir, f"{iteration}", f"rendered_extra_attrs"), exist_ok=True)
+            os.makedirs(os.path.dirname(os.path.join(self.save_dir, f"{iteration}", f"rendered_extra_attrs",image_name)), exist_ok=True)
             save_path = os.path.join(self.save_dir, f"{iteration}", f"rendered_extra_attrs", f"{image_name}.npy")
             extra_attrs = extra_attrs.float().detach().cpu().numpy()
             np.save(save_path, extra_attrs)
