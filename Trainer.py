@@ -31,9 +31,7 @@ LearningRate = dict(
     position_lr_init=0.00016,
     position_lr_final=0.0000016,
     position_lr_delay_mult=0.01,
-    scaling_lr_init=0.005,
-    scaling_lr_final=0.0000016,
-    scaling_lr_delay_mult=0.01,
+    scaling_lr=0.005,
     qvec_lr=0.001,
     tvec_lr=0.05,
     cam_lr=0.005,
@@ -446,6 +444,8 @@ class GSer():
             if alpha_gt is not None:
                 alpha_gt = alpha_gt.cuda()
                 image = image * (1 - alpha_gt[None]) + image_gt * alpha_gt[None]
+            # dy_mask =(image_gt==0).all(dim=0)[None].float()
+            # image_gt = image_gt*(1-dy_mask)+image*dy_mask
             Ll1 = l1_loss(image, image_gt)
             ssim_value = ssim(image, image_gt)
 
@@ -490,7 +490,7 @@ class GSer():
                 self.scheduler_cam.step()
 
             # if  ((iteration+1) % self.save_interval == 0) or (iteration == self.iterations - 1) or iteration == 0:
-            if ((iteration + 1) % self.save_interval == 0):
+            if ((iteration + 1) % self.save_interval == 0) or (iteration == self.iterations - 1):
                 os.makedirs(os.path.join(self.save_dir, f"{iteration}"), exist_ok=True)
                 save_path = os.path.join(self.save_dir, f"{iteration}", f"model.ply")
                 self.gaussians.save_ply(save_path, self.enable_save_skybox)

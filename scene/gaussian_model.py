@@ -215,7 +215,7 @@ class GaussianModel():
                     {'params': [self._features_dc], 'lr': lr["feature_lr"], "name": "f_dc"},
                     {'params': [self._features_rest], 'lr': lr["feature_lr"] / 20.0, "name": "f_rest"},
                     {'params': [self._opacity], 'lr': lr["opacity_lr"], "name": "opacity"},
-                    {'params': [self._scaling], 'lr': lr["scaling_lr_init"], "name": "scaling"},
+                    {'params': [self._scaling], 'lr': lr["scaling_lr"], "name": "scaling"},
                     {'params': [self._rotation], 'lr': lr["rotation_lr"], "name": "rotation"}
                 ]
 
@@ -225,20 +225,13 @@ class GaussianModel():
                                                         lr_final=lr['position_lr_final'] * self.scene_extent,
                                                         lr_delay_mult=lr['position_lr_delay_mult'],
                                                         max_steps=lr['position_lr_max_steps'])
-            self.scaling_scheduler_args = get_expon_lr_func(lr_init=lr['scaling_lr_init'],
-                                                            lr_final=lr['scaling_lr_final'],
-                                                            lr_delay_mult=lr['scaling_lr_delay_mult'],
-                                                            max_steps=lr['scaling_lr_max_steps'])
+         
 
     def update_learning_rate(self, iteration):
         ''' Learning rate scheduling per step '''
         for param_group in self.optimizer.param_groups:
             if param_group["name"] == "xyz":
                 lr = self.xyz_scheduler_args(iteration)
-                param_group['lr'] = lr
-                return lr
-            if param_group["name"] == "scaling":
-                lr = self.scaling_scheduler_args(iteration)
                 param_group['lr'] = lr
                 return lr
 
@@ -484,6 +477,13 @@ class GaussianModel():
 
         self.densification_postfix(new_xyz, new_extra_attrs, new_features_dc, new_features_rest, new_opacities,
                                    new_scaling, new_rotation)
+    def prune(self,min_opacity):
+        prune_mask = (self.opacity_activation(self._opacity) < min_opacity).squeeze()
+        # big_points_ws = self.scaling_activation(self._scaling).max(dim=1).values > self.percent_dense* self.scene_extent*10
+        # prune_mask = torch.logical_or(prune_mask, big_points_ws)
+        if self.verbose:
+            print(f"prune {prune_mask.sum()} points \n")
+        self.prune_points(prune_mask)
 
     def densify_and_prune(self, max_grad, min_opacity, N):
         grads = self.xyz_gradient_accum / self.denom
@@ -493,14 +493,7 @@ class GaussianModel():
         self.densify_and_split(grads, max_grad, N)
 
         # 不透明度小于阈值以及scale大于self.percent_dense* scene_extent 均被删除
-        prune_mask = (self.opacity_activation(self._opacity) < min_opacity).squeeze()
-
-        # big_points_ws = self.scaling_activation(self._scaling).max(dim=1).values > self.percent_dense* self.scene_extent*10
-        # prune_mask = torch.logical_or(prune_mask, big_points_ws)
-        if self.verbose:
-            print(f"prune {prune_mask.sum()} points \n")
-
-        self.prune_points(prune_mask)
+        self.prune(min_opacity)
 
         torch.cuda.empty_cache()
 
