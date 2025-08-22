@@ -477,9 +477,9 @@ class GaussianModel():
 
         self.densification_postfix(new_xyz, new_extra_attrs, new_features_dc, new_features_rest, new_opacities,
                                    new_scaling, new_rotation)
-    def prune(self,min_opacity):
+    def prune(self,min_opacity,N):
         prune_mask = (self.opacity_activation(self._opacity) < min_opacity).squeeze()
-        # big_points_ws = self.scaling_activation(self._scaling).max(dim=1).values > self.percent_dense* self.scene_extent*10
+        # big_points_ws = self.scaling_activation(self._scaling).max(dim=1).values > self.percent_dense* self.scene_extent*0.8 * N
         # prune_mask = torch.logical_or(prune_mask, big_points_ws)
         if self.verbose:
             print(f"prune {prune_mask.sum()} points \n")
@@ -493,7 +493,7 @@ class GaussianModel():
         self.densify_and_split(grads, max_grad, N)
 
         # 不透明度小于阈值以及scale大于self.percent_dense* scene_extent 均被删除
-        self.prune(min_opacity)
+        self.prune(min_opacity,N)
 
         torch.cuda.empty_cache()
 

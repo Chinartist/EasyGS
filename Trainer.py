@@ -223,7 +223,6 @@ class GSer():
 
                  ):
         lr_args["position_lr_max_steps"] = iterations
-        lr_args["scaling_lr_max_steps"] = densify_until_iter
         print(lr_args)
         print(loss_weights)
 
