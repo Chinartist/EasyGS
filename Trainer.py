@@ -444,8 +444,8 @@ class GSer():
             if alpha_gt is not None:
                 alpha_gt = alpha_gt.cuda()
                 image = image * (1 - alpha_gt[None]) + image_gt * alpha_gt[None]
-            # dy_mask =(image_gt==0).all(dim=0)[None].float()
-            # image_gt = image_gt*(1-dy_mask)+image*dy_mask
+            dy_mask =(image_gt==0).all(dim=0)[None].float()
+            image_gt = image_gt*(1-dy_mask)+image*dy_mask
             Ll1 = l1_loss(image, image_gt)
             ssim_value = ssim(image, image_gt)
 
