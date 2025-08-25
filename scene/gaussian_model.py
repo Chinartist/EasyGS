@@ -20,7 +20,10 @@ from plyfile import PlyData, PlyElement
 from utils.sh_utils import RGB2SH
 from simple_knn._C import distCUDA2
 from utils.general_utils import strip_symmetric, build_scaling_rotation
-
+import matplotlib
+import numpy as np
+from PIL import Image
+cmap = matplotlib.cm.get_cmap('Spectral_r')
 
 class GaussianModel():
 
@@ -271,7 +274,33 @@ class GaussianModel():
         PlyData([el]).write(path)
         if not enable_save_skybox:
             self.skyboxer = skyboxer
-
+    def save_sem_ply(self,path):
+        mkdir_p(os.path.dirname(path))
+        skyboxer = self.skyboxer
+        self.skyboxer = None
+        xyz = self.get_xyz.detach().cpu().numpy()
+        normals = np.zeros_like(xyz)
+        sem = self.get_extra_attrs.detach().cpu().numpy().argmax(axis=-1)*255/self._extra_attrs_dim
+        sem = sem.astype(np.int32)
+        rgb=cmap(sem)[:, :3][:,::-1].copy()
+        fused_color = RGB2SH(torch.tensor(np.asarray(rgb)).float().cuda())
+        features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
+        features[:, :3, 0] = fused_color
+        features[:, 3:, 1:] = 0.0
+        features_dc = features[:, :, 0:1]
+        features_rest = features[:, :, 1:]
+        f_dc = features_dc.flatten(start_dim=1).contiguous().cpu().numpy()
+        f_rest = features_rest.flatten(start_dim=1).contiguous().cpu().numpy()
+        opacities = self.opacity_inverse_activation(self.get_opacity).detach().cpu().numpy()
+        scale = self.scaling_inverse_activation(self.get_scaling).detach().cpu().numpy()
+        rotation = self.get_rotation.detach().cpu().numpy()
+        dtype_full = [(attribute, 'f4') for attribute in self.construct_list_of_attributes()]
+        elements = np.empty(xyz.shape[0], dtype=dtype_full)
+        attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
+        elements[:] = list(map(tuple, attributes))
+        el = PlyElement.describe(elements, 'vertex')
+        PlyData([el]).write(path)
+        self.skyboxer = skyboxer
     def reset_opacity(self):
         opacities_new = self.opacity_inverse_activation(torch.min(self.opacity_activation(self._opacity),
                                                                   torch.ones_like(

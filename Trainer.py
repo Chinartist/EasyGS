@@ -191,6 +191,7 @@ class GSer():
 
                  # 训练参数
                  verbose=True,
+                 sem_ignore_index=255,
                  N_split=2,
                  min_opacity=0.005,
                  percent_dense=0.01,
@@ -376,7 +377,7 @@ class GSer():
         self.densify_from_iter = densify_from_iter
         self.densification_interval = densification_interval
         self.opacity_reset_interval = opacity_reset_interval
-
+        self.sem_ignore_index = sem_ignore_index
         self.densify_grad_threshold = densify_grad_threshold
         self.densify_until_iter = densify_until_iter
         self.opacity_reset_until_iter = opacity_reset_until_iter
@@ -471,7 +472,7 @@ class GSer():
 
             if extra_attrs_gt is not None:
                 extra_attrs_gt = extra_attrs_gt.cuda()
-                extra_attrs_loss = torch.nn.functional.cross_entropy(extra_attrs[None], extra_attrs_gt[None])
+                extra_attrs_loss = torch.nn.functional.cross_entropy(extra_attrs[None], extra_attrs_gt[None],ignore_index=self.sem_ignore_index)
                 loss += extra_attrs_loss * self.loss_weights["extra_attrs_weight"]
 
             loss.backward()
@@ -493,6 +494,8 @@ class GSer():
                 os.makedirs(os.path.join(self.save_dir, f"{iteration}"), exist_ok=True)
                 save_path = os.path.join(self.save_dir, f"{iteration}", f"model.ply")
                 self.gaussians.save_ply(save_path, self.enable_save_skybox)
+                if self.gaussians._extra_attrs_dim > 0:
+                    self.gaussians.save_sem_ply(os.path.join(self.save_dir, f"{iteration}", f"model_sem.ply"))
                 save_path = os.path.join(self.save_dir, f"{iteration}", f"cameras.pth")
                 torch.save(self.cams.state_dict(), save_path)
                 save_path = os.path.join(self.save_dir, f"{iteration}", f"extra_attrs.pth")
@@ -567,7 +570,7 @@ class GSer():
             depth = depth.float().detach().cpu().numpy()
             np.save(os.path.join(self.save_dir, f"{iteration}", f"rendered_depth", f"{image_name}.npy"), depth)
             depth = (depth - depth.min()) / (depth.max() - depth.min()) * 255.0
-            depth = depth.astype(np.uint8)
+            depth = depth.astype(np.int32)
             depth = (CMAP(depth)[:, :, :3])[:, :, ::-1]
             depth = Image.fromarray((depth * 255).astype(np.uint8))
             depth.save(os.path.join(self.save_dir, f"{iteration}", f"rendered_depth_wcolor", f"{image_name}.png"))
