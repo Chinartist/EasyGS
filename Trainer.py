@@ -627,4 +627,4 @@ class GSer():
             shared_camera=False,
             camera_type="PINHOLE",
         )
-        rec.write_text(os.path.join(save_dir, "sparse/1/"))
+        rec.write_text(os.path.join(save_dir, "sparse/0/"))
