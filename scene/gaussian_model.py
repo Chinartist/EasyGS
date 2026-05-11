@@ -11,19 +11,38 @@
 
 import torch
 import numpy as np
-from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation
+
+try:
+    from ..utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation
+    from ..utils.system_utils import mkdir_p
+    from ..utils.sh_utils import RGB2SH
+    from ..utils.general_utils import strip_symmetric, build_scaling_rotation
+except ImportError:
+    from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation
+    from utils.system_utils import mkdir_p
+    from utils.sh_utils import RGB2SH
+    from utils.general_utils import strip_symmetric, build_scaling_rotation
 from torch import nn
 import os
 import json
-from utils.system_utils import mkdir_p
 from plyfile import PlyData, PlyElement
-from utils.sh_utils import RGB2SH
 from simple_knn._C import distCUDA2
-from utils.general_utils import strip_symmetric, build_scaling_rotation
 import matplotlib
 import numpy as np
 from PIL import Image
 cmap = matplotlib.cm.get_cmap('Spectral_r')
+
+
+def _infer_sh_degree(num_rest_coeffs):
+    if num_rest_coeffs == 0:
+        return 0
+    if num_rest_coeffs % 3 != 0:
+        raise ValueError(f"Invalid number of f_rest coefficients: {num_rest_coeffs}")
+    coeffs_per_channel = num_rest_coeffs // 3 + 1
+    degree = int(np.sqrt(coeffs_per_channel) - 1)
+    if 3 * ((degree + 1) ** 2 - 1) != num_rest_coeffs:
+        raise ValueError(f"Cannot infer SH degree from {num_rest_coeffs} f_rest coefficients.")
+    return degree
 
 class GaussianModel():
 
@@ -122,7 +141,7 @@ class GaussianModel():
 
     def get_covariance(self, scaling_modifier=1):
         if self.skyboxer is not None:
-            scaling = torch.cat([self.skyboxer.get_scaling, self.get_scaling], dim=0)
+            scaling = torch.cat([self.skyboxer.get_scaling, self.scaling_activation(self._scaling)], dim=0)
             rotation = torch.cat([self.skyboxer._rotation, self._rotation], dim=0)
             return self.covariance_activation(scaling, scaling_modifier, rotation)
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
@@ -323,7 +342,10 @@ class GaussianModel():
 
         extra_f_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("f_rest_")]
         extra_f_names = sorted(extra_f_names, key=lambda x: int(x.split('_')[-1]))
-        # assert len(extra_f_names)==3*(self.max_sh_degree + 1) ** 2 - 3
+        inferred_degree = _infer_sh_degree(len(extra_f_names))
+        if inferred_degree != self.max_sh_degree:
+            self.max_sh_degree = inferred_degree
+            self.active_sh_degree = min(self.active_sh_degree, self.max_sh_degree)
         features_extra = np.zeros((xyz.shape[0], 3 * ((self.max_sh_degree + 1) ** 2 - 1)))
         for idx, attr_name in enumerate(extra_f_names):
             features_extra[:, idx] = np.asarray(plydata.elements[0][attr_name])

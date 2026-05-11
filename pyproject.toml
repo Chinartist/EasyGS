@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "easygs"
+version = "0.1.0"
+description = "A lightweight plug-and-play 3D Gaussian Splatting training wrapper."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "Pillow",
+    "matplotlib",
+    "opencv-python",
+    "scipy",
+    "plyfile",
+    "tqdm",
+    "rich",
+    "pycolmap==3.11",
+]
+
+[project.optional-dependencies]
+logging = ["wandb"]
+
+[project.scripts]
+easygs = "EasyGS.cli:main"
+
+[tool.setuptools]
+packages = [
+    "EasyGS",
+    "EasyGS.gaussian_renderer",
+    "EasyGS.lpipsPyTorch",
+    "EasyGS.lpipsPyTorch.modules",
+    "EasyGS.scene",
+    "EasyGS.utils",
+]
+
+[tool.setuptools.package-dir]
+EasyGS = "."

@@ -1,162 +1,84 @@
-import sys
-import os
-
-sys.path.append(os.path.dirname(__file__))
+﻿import os
 import torch
 import random
-from utils.loss_utils import l1_loss, ssim, reprojection_loss
-from gaussian_renderer import render
-import sys
-from scene.gaussian_model import GaussianModel
-from utils.general_utils import get_expon_lr_func
-import uuid
-from tqdm import tqdm
-from utils.image_utils import psnr
-from scene.colmap_loader import read_extrinsics_text, read_intrinsics_text, \
-    read_extrinsics_binary, read_intrinsics_binary, read_points3D_binary, read_points3D_text
-from scene.dataset_readers import readColmapCameras, readCameras, getNerfppNorm
-from torch import nn
-from PIL import Image
-import numpy as np
-import matplotlib
-import pycolmap
+from typing import Mapping
+
+if __package__:
+    from .gaussian_renderer import render
+    from .callbacks import CallbackList, default_callbacks
+    from .colmap_io import save_colmap_reconstruction
+    from .config import LearningRateConfig, LossWeightsConfig
+    from .checkpoint import CheckpointManager, load_pretrained_checkpoint
+    from .data import build_scene
+    from .losses import EvalMetricComputer, GaussianLossComputer
+    from .outputs import RenderOutputSaver
+else:
+    from gaussian_renderer import render
+    from callbacks import CallbackList, default_callbacks
+    from colmap_io import save_colmap_reconstruction
+    from config import LearningRateConfig, LossWeightsConfig
+    from checkpoint import CheckpointManager, load_pretrained_checkpoint
+    from data import build_scene
+    from losses import EvalMetricComputer, GaussianLossComputer
+    from outputs import RenderOutputSaver
 from copy import deepcopy
-from rich import print
-from rich.progress import Progress, track, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn, \
-    SpinnerColumn, RenderableColumn, MofNCompleteColumn
 from torch.optim.lr_scheduler import LinearLR
-import wandb
 
-LearningRate = dict(
-    position_lr_init=0.00016,
-    position_lr_final=0.0000016,
-    position_lr_delay_mult=0.01,
-    scaling_lr=0.005,
-    qvec_lr=0.001,
-    tvec_lr=0.05,
-    cam_lr=0.005,
-    extra_attrs_lr=0.001,
-    feature_lr=0.0025,
-    opacity_lr=0.025,
-    rotation_lr=0.001,
-)
-LossWeights = dict(
-    rgb_l1_weight=0.8,
-    rgb_ssim_weight=0.2,
-    depth_weight=1.0,
-    normals_weight=1.0,
-    alpha_weight=1.0,
-    sift_weight=1.0,
-    extra_attrs_weight=0.1,
-)
-CMAP = matplotlib.colormaps.get_cmap('Spectral_r')
+LearningRate = LearningRateConfig().to_dict()
+LossWeights = LossWeightsConfig().to_dict()
 
 
-def _build_pycolmap_intri(fidx, intrinsics, camera_type, extra_params=None):
-    """
-    Helper function to get camera parameters based on camera type.
+class GSer:
+    @staticmethod
+    def _normalize_config(config, defaults):
+        if config is None:
+            return dict(defaults)
+        if hasattr(config, "to_dict"):
+            return config.to_dict()
+        if isinstance(config, Mapping):
+            merged = dict(defaults)
+            merged.update(config)
+            return merged
+        raise TypeError("Config must be a dict-like object or expose to_dict().")
 
-    Args:
-        fidx: Frame index
-        intrinsics: Camera intrinsic parameters
-        camera_type: Type of camera model
-        extra_params: Additional parameters for certain camera types
+    def _collect_run_config(self):
+        run_config = {}
+        for key, value in self.__dict__.items():
+            if isinstance(value, (str, int, float, bool)):
+                run_config[key] = value
+            elif isinstance(value, (list, tuple)) and all(isinstance(item, (str, int, float, bool)) for item in value):
+                run_config[key] = list(value)
+        return run_config
 
-    Returns:
-        pycolmap_intri: NumPy array of camera parameters
-    """
-    if camera_type == "PINHOLE":
-        pycolmap_intri = np.array(
-            [intrinsics[fidx][0, 0], intrinsics[fidx][1, 1], intrinsics[fidx][0, 2], intrinsics[fidx][1, 2]]
+    @classmethod
+    def from_colmap(cls, colmap_path, save_dir=None, config=None, **kwargs):
+        """Create a trainer from a COLMAP scene with readable defaults."""
+        if save_dir is None:
+            save_dir = os.path.join(colmap_path, "3dgs")
+        if config is not None:
+            if not hasattr(config, "to_kwargs"):
+                raise TypeError("config must expose to_kwargs().")
+            kwargs = {**config.to_kwargs(), **kwargs}
+        return cls(colmap_path=colmap_path, save_dir=save_dir, **kwargs)
+
+    @classmethod
+    def from_arrays(cls, w2c, intrinsics, images=None, xyz=None, save_dir="outputs", config=None, **kwargs):
+        """Create a trainer from in-memory cameras, images, and points."""
+        if config is not None:
+            if not hasattr(config, "to_kwargs"):
+                raise TypeError("config must expose to_kwargs().")
+            kwargs = {**config.to_kwargs(), **kwargs}
+        return cls(
+            w2c=w2c,
+            intrinsics=intrinsics,
+            images=images,
+            xyz=xyz,
+            save_dir=save_dir,
+            **kwargs,
         )
-    elif camera_type == "SIMPLE_PINHOLE":
-        focal = (intrinsics[fidx][0, 0] + intrinsics[fidx][1, 1]) / 2
-        pycolmap_intri = np.array([focal, intrinsics[fidx][0, 2], intrinsics[fidx][1, 2]])
-    elif camera_type == "SIMPLE_RADIAL":
-        raise NotImplementedError("SIMPLE_RADIAL is not supported yet")
-        focal = (intrinsics[fidx][0, 0] + intrinsics[fidx][1, 1]) / 2
-        pycolmap_intri = np.array([focal, intrinsics[fidx][0, 2], intrinsics[fidx][1, 2], extra_params[fidx][0]])
-    else:
-        raise ValueError(f"Camera type {camera_type} is not supported yet")
 
-    return pycolmap_intri
-
-
-def batch_np_matrix_to_pycolmap_wo_track(
-        points3d,
-        points_rgb,
-        extrinsics,
-        intrinsics,
-        image_names,
-        image_size,
-        shared_camera=False,
-        camera_type="PINHOLE",
-):
-    """
-    Convert Batched NumPy Arrays to PyCOLMAP
-
-    Different from batch_np_matrix_to_pycolmap, this function does not use tracks.
-
-    It saves points3d to colmap reconstruction format only to serve as init for Gaussians or other nvs methods.
-
-    Do NOT use this for BA.
-    """
-    # points3d: Px3
-    # points_xyf: Px3, with x, y coordinates and frame indices
-    # points_rgb: Px3, rgb colors
-    # extrinsics: Nx3x4
-    # intrinsics: Nx3x3
-    # image_size: 2, assume all the frames have been padded to the same size
-    # where N is the number of frames and P is the number of tracks
-
-    N = len(extrinsics)
-    P = len(points3d)
-
-    # Reconstruction object, following the format of PyCOLMAP/COLMAP
-    reconstruction = pycolmap.Reconstruction()
-    if points_rgb is None:
-        points_rgb = np.ones((P, 3)) * 128  # np.random.rand(P, 3)* 255
-    for vidx in range(P):
-        reconstruction.add_point3D(points3d[vidx], pycolmap.Track(), points_rgb[vidx])
-
-    camera = None
-    # frame idx
-    for fidx in range(N):
-        # set camera
-        if camera is None or (not shared_camera):
-            pycolmap_intri = _build_pycolmap_intri(fidx, intrinsics, camera_type)
-
-            camera = pycolmap.Camera(
-                model=camera_type, width=image_size[0], height=image_size[1], params=pycolmap_intri, camera_id=fidx + 1
-            )
-
-            # add camera
-            reconstruction.add_camera(camera)
-        # set image
-        cam_from_world = pycolmap.Rigid3d(
-            pycolmap.Rotation3d(extrinsics[fidx][:3, :3]), extrinsics[fidx][:3, 3]
-        )  # Rot and Trans
-
-        image = pycolmap.Image(
-            id=fidx + 1, name=image_names[fidx], camera_id=camera.camera_id, cam_from_world=cam_from_world
-        )
-        # add image
-        reconstruction.add_image(image)
-
-    # 保证在colmap gui中可见
-    for vidx in range(P):
-        # add track
-        track = reconstruction.points3D[vidx + 1].track
-        track.add_element(1, 1)
-        track.add_element(1, 1)
-        track.add_element(1, 1)
-    return reconstruction
-
-
-class GSer():
     def __init__(self,
-                 # 要么提供COLMAP路径，要么提供相机参数
-
+                 # data sources
                  colmap_path=None,
                  w2c=None,
                  intrinsics=None,
@@ -167,13 +89,13 @@ class GSer():
                  save_dir=None,
                  height=None,
                  width=None,
-                 # 数据路径
+                 # optional data folders
                  images_folder=None,
                  depths_folder=None,
                  normals_folder=None,
                  alphas_folder=None,
                  extra_attrs_folder=None,
-                 # 训练和测试设置
+                 # data loading and training options
                  preload=True,
                  enable_freeze=False,
                  only_fit_sh=False,
@@ -189,7 +111,7 @@ class GSer():
                  enable_save_rendered_alpha=False,
                  enable_save_rendered_extra_attrs=False,
 
-                 # 训练参数
+                 # training parameters
                  verbose=True,
                  sem_ignore_index=255,
                  N_split=2,
@@ -198,14 +120,14 @@ class GSer():
                  skybox_points=100_000, skybox_radius_scale=10.0,
                  extra_attrs_dim=0,
                  eval_rate=1.0,
-                 lr_args=LearningRate,
-                 loss_weights=LossWeights,
+                 lr_args=None,
+                 loss_weights=None,
 
                  use_sift_loss=False,
 
                  init_degree=0,
                  max_sh_degree=3,
-                 bg_color=[1, 1, 1],
+                 bg_color=None,
 
                  iterations=30_000,
                  sh_increase_interval=1000,
@@ -221,94 +143,82 @@ class GSer():
                  densify_grad_threshold=0.0002,
                  wandb_project=None,
                  wandb_name=None,
+                 callbacks=None,
+                 extra_callbacks=None,
+                 enable_progress=True,
 
                  ):
+        if not 0 < eval_rate <= 1:
+            raise ValueError("eval_rate must be in the range (0, 1].")
+        if iterations <= 0:
+            raise ValueError("iterations must be greater than 0.")
+        for name, value in {
+            "sh_increase_interval": sh_increase_interval,
+            "save_interval": save_interval,
+            "eval_interval": eval_interval,
+            "opacity_reset_interval": opacity_reset_interval,
+            "densification_interval": densification_interval,
+        }.items():
+            if value <= 0:
+                raise ValueError(f"{name} must be greater than 0.")
+        if enable_cam_update and iterations <= cam_update_from_iter:
+            raise ValueError(
+                "enable_cam_update=True but iterations <= cam_update_from_iter, so the camera optimizer "
+                "would never step. Lower cam_update_from_iter or increase iterations."
+            )
+
+        if enable_freeze or only_fit_sh:
+            if enable_densification:
+                print("Densification is disabled when enable_freeze=True or only_fit_sh=True.")
+                enable_densification = False
+            if enable_reset_opacity:
+                print("Opacity reset is disabled when enable_freeze=True or only_fit_sh=True.")
+                enable_reset_opacity = False
+
+        lr_args = self._normalize_config(lr_args, LearningRate)
+        loss_weights = self._normalize_config(loss_weights, LossWeights)
+        bg_color = [1, 1, 1] if bg_color is None else list(bg_color)
+        if save_dir is None:
+            save_dir = "outputs"
+        os.makedirs(save_dir, exist_ok=True)
+        self.device = torch.device("cuda")
         lr_args["position_lr_max_steps"] = iterations
         print(lr_args)
         print(loss_weights)
 
-        gaussians = GaussianModel(init_degree, max_sh_degree, extra_attrs_dim, percent_dense, verbose=verbose)
-        cams = None
+        scene = build_scene(
+            colmap_path=colmap_path,
+            w2c=w2c,
+            intrinsics=intrinsics,
+            images=images,
+            xyz=xyz,
+            rgb=rgb,
+            pretrained_path=pretrained_path,
+            height=height,
+            width=width,
+            images_folder=images_folder,
+            depths_folder=depths_folder,
+            normals_folder=normals_folder,
+            alphas_folder=alphas_folder,
+            extra_attrs_folder=extra_attrs_folder,
+            preload=preload,
+            init_degree=init_degree,
+            max_sh_degree=max_sh_degree,
+            extra_attrs_dim=extra_attrs_dim,
+            percent_dense=percent_dense,
+            verbose=verbose,
+            add_skybox=add_skybox,
+            skybox_points=skybox_points,
+            skybox_radius_scale=skybox_radius_scale,
+        )
+        gaussians = scene.gaussians
+        cams = scene.cameras
 
-        # 载入COLMAP数据或者提供的相机参数
-        if colmap_path is not None:
-            print(f"Using COLMAP path: {colmap_path}")
-            try:
-                cameras_extrinsic_file = os.path.join(colmap_path, "sparse/0", "images.bin")
-                cameras_intrinsic_file = os.path.join(colmap_path, "sparse/0", "cameras.bin")
-                cam_extrinsics = read_extrinsics_binary(cameras_extrinsic_file)
-                cam_intrinsics = read_intrinsics_binary(cameras_intrinsic_file)
-            except:
-                cameras_extrinsic_file = os.path.join(colmap_path, "sparse/0", "images.txt")
-                cameras_intrinsic_file = os.path.join(colmap_path, "sparse/0", "cameras.txt")
-                cam_extrinsics = read_extrinsics_text(cameras_extrinsic_file)
-                cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
-            if images_folder is None:
-                images_folder = os.path.join(colmap_path, "images/")
-            cam_infos_unsorted = readColmapCameras(
-                cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, images_folder=images_folder,
-                depths_folder=depths_folder,
-                normals_folder=normals_folder, alphas_folder=alphas_folder, extra_attrs_folder=extra_attrs_folder,
-                Height=height, Width=width, preload=preload)
-            cam_infos = sorted(cam_infos_unsorted.copy(), key=lambda x: x.image_name)
-            nerf_normalization = getNerfppNorm(cam_infos)
-            bin_path = os.path.join(colmap_path, "sparse/0/points3D.bin")
-            txt_path = os.path.join(colmap_path, "sparse/0/points3D.txt")
-
-            if os.path.exists(bin_path):
-                xyz, rgb, _ = read_points3D_binary(bin_path)
-            elif os.path.exists(txt_path):
-                xyz, rgb, _ = read_points3D_text(txt_path)
-            else:
-                xyz = None
-                rgb = None
-            if xyz is not None:
-                if rgb.max() > 1.0:
-                    rgb = rgb / 255.0
-                if len(cam_infos) == 1:
-                    nerf_normalization["radius"] = np.max(np.linalg.norm(xyz - np.mean(xyz, axis=0), axis=1)) * 1.1
-                gaussians.create_from_pcd(xyz, rgb, nerf_normalization["radius"], add_skybox,
-                                          skybox_points=skybox_points, skybox_radius_scale=skybox_radius_scale)
-            cams = nn.ModuleList(cam_infos)
-
-        elif w2c is not None and intrinsics is not None and (
-                images is not None or (height is not None and width is not None)) and (
-                xyz is not None or pretrained_path is not None):
-            print("Using provided camera parameters.")
-            cam_infos_unsorted = readCameras(cam_extrinsics=w2c, cam_intrinsics=intrinsics, images=images,
-                                             Height=height, Width=width, )
-            cam_infos = sorted(cam_infos_unsorted.copy(), key=lambda x: x.image_name)
-            nerf_normalization = getNerfppNorm(cam_infos)
-            if xyz is not None:
-                if rgb is None:
-                    rgb = np.ones_like(xyz, dtype=np.float32) * 0.5
-                if rgb.max() > 1.0:
-                    rgb = rgb / 255.0
-                if len(cam_infos) == 1:
-                    nerf_normalization["radius"] = np.max(np.linalg.norm(xyz - np.mean(xyz, axis=0), axis=1)) * 1.1
-                gaussians.create_from_pcd(xyz, rgb, nerf_normalization["radius"], add_skybox,
-                                          skybox_points=skybox_points, skybox_radius_scale=skybox_radius_scale)
-            cams = nn.ModuleList(cam_infos)
-        else:
-            raise ValueError(
-                "Either colmap_path or w2c, intrinsics, images and (xyz or pretrained_path) must be provided.")
-
-        # 载入预训练模型
+        # load pretrained Gaussian model
         if pretrained_path is not None:
-            if pretrained_path.endswith(".ply"):
-                print(f"Loading pretrained model from {pretrained_path}")
-                gaussians.load_ply(pretrained_path)
-            elif os.path.isdir(pretrained_path):
-                print(f"Loading pretrained model from directory {pretrained_path}")
-                gaussians.load_ply(os.path.join(pretrained_path, "model.ply"))
-                cams.load_state_dict(torch.load(os.path.join(pretrained_path, "cameras.pth", ), weights_only=True))
-                gaussians._extra_attrs = nn.Parameter(
-                    torch.load(os.path.join(pretrained_path, "extra_attrs.pth"), weights_only=True).cuda(),
-                    requires_grad=True)
-            else:
-                raise ValueError("Pretrained path must be a directory or a .ply file.")
+            load_pretrained_checkpoint(pretrained_path, gaussians, cams, self.device)
 
-        # 设置训练集和验证集
+        # split cameras for training and evaluation
         if eval_rate < 1:
             self.indices_for_eval = [idx for idx in range(len(cams)) if idx % int(1 / eval_rate) == 0]
         else:
@@ -319,11 +229,15 @@ class GSer():
         else:
             print("enable_train_all is set to True, all cameras will be used for training.")
             self.indices_for_train = [idx for idx in range(len(cams))]
+        if not self.indices_for_train:
+            raise ValueError("No cameras selected for training. Set enable_train_all=True or lower eval_rate.")
+        if not self.indices_for_eval:
+            raise ValueError("No cameras selected for evaluation. Increase eval_rate.")
         print(f"Number of cameras: {len(cams)}")
         print(
             f"Number of cameras for training: {len(self.indices_for_train)}, for evaluation: {len(self.indices_for_eval)}")
 
-        # 设置相机优化器
+        # configure camera optimization
         self.enable_cam_update = enable_cam_update
         self.use_sift_loss = use_sift_loss
         if not enable_cam_update:
@@ -339,27 +253,27 @@ class GSer():
                 qvec_params.append(cam.qvec)
                 tvec_params.append(cam.tvec)
             self.optimizer_cam = torch.optim.Adam([
-                {'params': qvec_params, 'lr': lr_args["qvec_lr"]},  # 旋转参数的学习率
-                {'params': tvec_params, 'lr': lr_args["tvec_lr"]}  # 平移参数的学习率
+                {'params': qvec_params, 'lr': lr_args["qvec_lr"]},
+                {'params': tvec_params, 'lr': lr_args["tvec_lr"]},
             ])
 
             self.scheduler_cam = LinearLR(self.optimizer_cam, start_factor=1.0, end_factor=0.01,
-                                          total_iters=iterations - cam_update_from_iter)
-        # print一些训练设置
+                                          total_iters=max(1, iterations - cam_update_from_iter))
+        # print selected training settings
         if not enable_densification:
             print("enable_densification is set to False, densification will not be performed during training.")
         if not enable_reset_opacity:
             print("enable_reset_opacity is set to False, opacity will not be reset during training.")
         print(f"Model will be saved to {save_dir}")
         print(f"Scene extent: {gaussians.scene_extent}")
-        # 设置gs优化器
+        # configure Gaussian optimizer
         gaussians.training_setup(lr_args, freeze=enable_freeze, only_fit_sh=only_fit_sh)
         if gaussians.skyboxer is not None:
             lr_skyboxer = {k: v for k, v in lr_args.items()}
             lr_skyboxer["extra_attrs_lr"] = 0.
             gaussians.skyboxer.training_setup(lr_skyboxer)
 
-        # 初始化参数
+        # initialize instance state
         self.gaussians = gaussians
         self.cams = cams
         self.N_split = N_split
@@ -388,243 +302,146 @@ class GSer():
         self.eval_rate = eval_rate
         self.save_dir = save_dir
         self.sh_increase_interval = sh_increase_interval
-        self.background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
+        self.background = torch.tensor(bg_color, dtype=torch.float32, device=self.device)
         self.loss_weights = loss_weights
-        self.wandb_project = wandb_project
-        # 初始化进度条
-        pbar = Progress(TextColumn("[progress.description]{task.description}"),
-                        BarColumn(),
-                        TaskProgressColumn(),
-                        TimeRemainingColumn(),
-                        MofNCompleteColumn(),
-                        SpinnerColumn(),
-                        RenderableColumn())
-        pbar.start()
-        self.pbar = pbar
-        self.train_task = self.pbar.add_task("[red]Training...", total=self.iterations)
-        self.eval_task = self.pbar.add_task("[green]Evaluating...", total=len(self.indices_for_eval))
-        # 遍历所有属性，将字符串和数字属性转换为字典
-        all_args = {}
-        for key, value in self.__dict__.items():
-            if isinstance(value, str) or isinstance(value, int):
-                all_args[key] = value
-        if wandb_project is not None:
-            wandb.init(config=all_args,
-                       project=wandb_project,
-                       name=wandb_name,
-                       dir=save_dir,
-                       )
+        self.last_metrics = None
+        self._callbacks_closed = False
+        self._is_training = False
+        self.loss_computer = GaussianLossComputer(
+            weights=loss_weights,
+            device=self.device,
+            sem_ignore_index=sem_ignore_index,
+            use_sift_loss=use_sift_loss,
+        )
+        self.metric_computer = EvalMetricComputer(device=self.device)
+        self.checkpoints = CheckpointManager(save_dir=save_dir, enable_save_skybox=enable_save_skybox)
+        self.output_saver = RenderOutputSaver(
+            save_dir=save_dir,
+            save_images=enable_save_rendered_images,
+            save_depth=enable_save_rendered_depth,
+            save_normals=enable_save_rendered_normals,
+            save_alpha=enable_save_rendered_alpha,
+            save_extra_attrs=enable_save_rendered_extra_attrs,
+        )
+        self.run_config = self._collect_run_config()
+        self.checkpoints.set_run_config(self.run_config)
+        if callbacks is None:
+            callbacks = default_callbacks(
+                wandb_project=wandb_project,
+                wandb_name=wandb_name,
+                save_dir=save_dir,
+                enable_progress=enable_progress,
+            )
+        if extra_callbacks is not None:
+            callbacks = list(callbacks) + list(extra_callbacks)
+        self.callbacks = CallbackList(callbacks)
+        self.callbacks.setup(self)
 
-    def train(self, ):
-        indices_random = deepcopy(self.indices_for_train)
-        random.shuffle(indices_random)
-        for iteration in range(self.iterations):
-            if self.enable_freeze is False:
-                self.gaussians.update_learning_rate(iteration)
-            if (iteration + 1) % self.sh_increase_interval == 0:
-                self.gaussians.oneupSHdegree()
-            if len(indices_random) == 0:
-                indices_random = deepcopy(self.indices_for_train)
-                random.shuffle(indices_random)
+    def train(self):
+        indices_random = self._reshuffle_train_indices()
+        self.last_metrics = None
+        self._is_training = True
+        self.callbacks.on_train_start(self)
 
-            viewpoint_cam = self.cams[indices_random.pop()]
-            render_pkg = render(viewpoint_cam, self.gaussians, self.background)
-            image, viewspace_point_tensor, visibility_filter = render_pkg["render"], render_pkg["viewspace_points"], \
-            render_pkg["visibility_filter"]
-            depth, normals, alpha, extra_attrs = render_pkg["depth"], render_pkg["normals"], render_pkg["alpha"], \
-            render_pkg["extra_attrs"]
+        try:
+            for iteration in range(self.iterations):
+                self._before_train_iteration(iteration)
 
-            image_gt = viewpoint_cam.get_image_gt
-            depth_gt = viewpoint_cam.get_depth_gt
-            normal_gt = viewpoint_cam.get_normal_gt
-            alpha_gt = viewpoint_cam.get_alpha_gt
-            extra_attrs_gt = viewpoint_cam.get_extra_attrs_gt
+                if len(indices_random) == 0:
+                    indices_random = self._reshuffle_train_indices()
 
-            image_gt = image_gt.cuda()
-            if alpha_gt is not None:
-                alpha_gt = alpha_gt.cuda()
-                image = image * (1 - alpha_gt[None]) + image_gt * alpha_gt[None]
-            # dy_mask =(image_gt==0).all(dim=0)[None].float()
-            # image_gt = image_gt*(1-dy_mask)+image*dy_mask
-            Ll1 = l1_loss(image, image_gt)
-            ssim_value = ssim(image, image_gt)
+                viewpoint_cam = self.cams[indices_random.pop()]
+                render_pkg = render(viewpoint_cam, self.gaussians, self.background)
+                loss, loss_scalars = self.loss_computer(
+                    render_pkg,
+                    viewpoint_cam,
+                    enable_cam_update=self.enable_cam_update,
+                )
 
-            loss = Ll1 * self.loss_weights["rgb_l1_weight"] + (1.0 - ssim_value) * self.loss_weights["rgb_ssim_weight"]
+                loss.backward()
+                viewspace_point_tensor_grad = render_pkg["viewspace_points"].grad
+                self._optimizer_step(iteration)
 
-            if self.enable_cam_update and self.use_sift_loss:
-                sift_loss = reprojection_loss(image, image_gt)
-                loss += sift_loss * self.loss_weights["sift_weight"]
+                self.callbacks.on_train_iteration_end(self, iteration, loss_scalars, render_pkg)
+                self._densification_step(iteration, viewspace_point_tensor_grad, render_pkg["visibility_filter"])
+        finally:
+            self._is_training = False
+            self.close()
 
-            if depth_gt is not None:
-                depth_gt = depth_gt.cuda()
-                depth_loss = torch.nn.functional.mse_loss(depth, depth_gt)
-                loss += depth_loss * self.loss_weights["depth_weight"]
+    def close(self):
+        if self._callbacks_closed:
+            return
+        self.callbacks.on_train_end(self)
+        self._callbacks_closed = True
 
-            if normal_gt is not None:
-                normal_gt = normal_gt.cuda()
-                normals_loss = torch.nn.functional.mse_loss(normals, normal_gt)
-                loss += normals_loss * self.loss_weights["normals_weight"]
+    def _reshuffle_train_indices(self):
+        indices = deepcopy(self.indices_for_train)
+        random.shuffle(indices)
+        return indices
 
-            if alpha_gt is not None:
-                alpha_gt = alpha_gt.cuda()
-                alpha_loss = (alpha_gt * alpha).mean()
-                loss += alpha_loss * self.loss_weights["alpha_weight"]
+    def _before_train_iteration(self, iteration):
+        if self.enable_freeze is False:
+            self.gaussians.update_learning_rate(iteration)
+        if (iteration + 1) % self.sh_increase_interval == 0:
+            self.gaussians.oneupSHdegree()
 
-            if extra_attrs_gt is not None:
-                extra_attrs_gt = extra_attrs_gt.cuda()
-                extra_attrs_loss = torch.nn.functional.cross_entropy(extra_attrs[None], extra_attrs_gt[None],ignore_index=self.sem_ignore_index)
-                loss += extra_attrs_loss * self.loss_weights["extra_attrs_weight"]
+    def _optimizer_step(self, iteration):
+        if self.enable_freeze is False:
+            self.gaussians.optimizer.step()
+            self.gaussians.optimizer.zero_grad(set_to_none=True)
+        if self.gaussians.skyboxer is not None:
+            self.gaussians.skyboxer.optimizer.step()
+            self.gaussians.skyboxer.optimizer.zero_grad(set_to_none=True)
+        if self.optimizer_cam is not None and iteration >= self.cam_update_from_iter:
+            self.optimizer_cam.step()
+            self.optimizer_cam.zero_grad(set_to_none=True)
+            self.scheduler_cam.step()
 
-            loss.backward()
-            viewspace_point_tensor_grad = viewspace_point_tensor.grad
-
-            if self.enable_freeze is False:
-                self.gaussians.optimizer.step()
-                self.gaussians.optimizer.zero_grad(set_to_none=True)
-            if self.gaussians.skyboxer is not None:
-                self.gaussians.skyboxer.optimizer.step()
-                self.gaussians.skyboxer.optimizer.zero_grad(set_to_none=True)
-            if self.optimizer_cam is not None and iteration > self.cam_update_from_iter:
-                self.optimizer_cam.step()
-                self.optimizer_cam.zero_grad(set_to_none=True)
-                self.scheduler_cam.step()
-
-            # if  ((iteration+1) % self.save_interval == 0) or (iteration == self.iterations - 1) or iteration == 0:
-            if ((iteration + 1) % self.save_interval == 0) or (iteration == self.iterations - 1):
-                os.makedirs(os.path.join(self.save_dir, f"{iteration}"), exist_ok=True)
-                save_path = os.path.join(self.save_dir, f"{iteration}", f"model.ply")
-                self.gaussians.save_ply(save_path, self.enable_save_skybox)
-                if self.gaussians._extra_attrs_dim > 0:
-                    self.gaussians.save_sem_ply(os.path.join(self.save_dir, f"{iteration}", f"model_sem.ply"))
-                save_path = os.path.join(self.save_dir, f"{iteration}", f"cameras.pth")
-                torch.save(self.cams.state_dict(), save_path)
-                save_path = os.path.join(self.save_dir, f"{iteration}", f"extra_attrs.pth")
-                torch.save(self.gaussians.get_extra_attrs.detach().cpu(), save_path)
-            self.pbar.update(self.train_task, advance=1, description=f"[red]Training...  | Loss: {loss.item():.4f}")
-
-            if (iteration + 1) % self.eval_interval == 0 or iteration == self.iterations - 1 or iteration == 0:
-                self.eval(iteration)
-            with torch.no_grad():
-
-                if iteration < self.densify_until_iter and self.enable_densification:
-                    # Keep track of max radii in image-space for pruning
+    def _densification_step(self, iteration, viewspace_point_tensor_grad, visibility_filter):
+        with torch.no_grad():
+            if iteration < self.densify_until_iter and self.enable_densification:
+                if viewspace_point_tensor_grad is not None and self.gaussians.optimizer is not None:
                     viewspace_point_tensor_grad = viewspace_point_tensor_grad[self.gaussians.num_fixed_points:]
                     visibility_filter = visibility_filter[self.gaussians.num_fixed_points:].nonzero()
-
                     self.gaussians.add_densification_stats(viewspace_point_tensor_grad, visibility_filter)
                     if iteration > self.densify_from_iter and (iteration + 1) % self.densification_interval == 0:
                         self.gaussians.densify_and_prune(self.densify_grad_threshold, self.min_opacity, self.N_split)
 
-                if (
-                        iteration + 1) % self.opacity_reset_interval == 0 and iteration < self.opacity_reset_until_iter and self.enable_reset_opacity:
-                    self.gaussians.reset_opacity()
+            should_reset_opacity = (
+                (iteration + 1) % self.opacity_reset_interval == 0
+                and iteration < self.opacity_reset_until_iter
+                and self.enable_reset_opacity
+            )
+            if should_reset_opacity:
+                self.gaussians.reset_opacity()
+
+    def should_eval(self, iteration):
+        return (iteration + 1) % self.eval_interval == 0 or iteration == self.iterations - 1 or iteration == 0
+
+    def should_save(self, iteration):
+        return (iteration + 1) % self.save_interval == 0 or iteration == self.iterations - 1
 
     @torch.no_grad()
     def eval(self, iteration=0):
-        self.pbar.reset(self.eval_task)
-        l1_record = []
-        ssim_record = []
-        psnr_record = []
+        self.callbacks.on_eval_start(self, iteration, len(self.indices_for_eval))
+        records = []
         for idx, ind_for_eval in enumerate(self.indices_for_eval):
             viewpoint_cam = self.cams[ind_for_eval]
             render_pkg = render(viewpoint_cam, self.gaussians, self.background)
-            image = render_pkg["render"]
-            depth, normals, alpha, extra_attrs = render_pkg["depth"], render_pkg["normals"], render_pkg["alpha"], \
-            render_pkg["extra_attrs"]
-            self.save_outputs(render_pkg, viewpoint_cam, iteration)
-            image_gt = viewpoint_cam.get_image_gt.cuda()
-            alpha_gt = viewpoint_cam.get_alpha_gt
-            if alpha_gt is not None:
-                alpha_gt = alpha_gt.cuda()
-                image = image * (1 - alpha_gt[None]) + image_gt * alpha_gt[None]
-            Ll1 = l1_loss(image, image_gt).item()
-            ssim_value = ssim(image, image_gt).item()
-            psnr_value = psnr(image, image_gt).mean().item()
-            l1_record.append(Ll1)
-            ssim_record.append(ssim_value)
-            psnr_record.append(psnr_value)
-            self.pbar.update(self.eval_task, advance=1,
-                             description=f"[green]Evaluating... {idx} | PSNR: {psnr_value:.4f} | SSIM: {ssim_value:.4f} | L1: {Ll1:.4f}")
-        l1_mean = sum(l1_record) / len(l1_record)
-        ssim_mean = sum(ssim_record) / len(ssim_record)
-        psnr_mean = sum(psnr_record) / len(psnr_record)
-        if self.wandb_project is not None:
-            wandb.log({"PSNR": psnr_mean, "SSIM": ssim_mean, "L1": l1_mean}, step=iteration)
-        print(f"Evaluation results of {iteration}: PSNR: {psnr_mean:.4f}, SSIM: {ssim_mean:.4f}, L1: {l1_mean:.4f}")
-        return None
+            self.output_saver.save(render_pkg, viewpoint_cam, iteration)
+            metrics = self.metric_computer(render_pkg, viewpoint_cam)
+            records.append(metrics)
+            self.callbacks.on_eval_batch_end(self, iteration, idx, metrics)
+
+        means = {
+            key: sum(record[key] for record in records) / len(records)
+            for key in records[0]
+        }
+        self.callbacks.on_eval_end(self, iteration, means)
+        return means
 
     def save_outputs(self, render_pkg, viewpoint_cam, iteration):
-        rgb, depth, normals, alpha, extra_attrs = render_pkg["render"], render_pkg["depth"], render_pkg["normals"], \
-        render_pkg["alpha"], render_pkg["extra_attrs"]
-        endwith = "." + viewpoint_cam.image_name.split('.')[-1]
-        image_name = viewpoint_cam.image_name.replace(endwith, "")
-        if self.enable_save_rendered_images:
-            os.makedirs(os.path.dirname(os.path.join(self.save_dir, f"{iteration}", f"rendered_images",image_name)), exist_ok=True)
-            save_path = os.path.join(self.save_dir, f"{iteration}", f"rendered_images", f"{image_name}.png")
-            rgb = (rgb * 255).clamp(0, 255).byte().permute(1, 2, 0).cpu().numpy()
-            rgb = Image.fromarray(rgb)
-            rgb.save(save_path)
-        if self.enable_save_rendered_depth:
-            os.makedirs(os.path.dirname(os.path.join(self.save_dir, f"{iteration}", f"rendered_depth",image_name)), exist_ok=True)
-            os.makedirs(os.path.dirname(os.path.join(self.save_dir, f"{iteration}", f"rendered_depth_wcolor",image_name)), exist_ok=True)
-            depth = depth.float().detach().cpu().numpy()
-            np.save(os.path.join(self.save_dir, f"{iteration}", f"rendered_depth", f"{image_name}.npy"), depth)
-            depth = (depth - depth.min()) / (depth.max() - depth.min()) * 255.0
-            depth = depth.astype(np.int32)
-            depth = (CMAP(depth)[:, :, :3])[:, :, ::-1]
-            depth = Image.fromarray((depth * 255).astype(np.uint8))
-            depth.save(os.path.join(self.save_dir, f"{iteration}", f"rendered_depth_wcolor", f"{image_name}.png"))
-        if self.enable_save_rendered_normals:
-            os.makedirs(os.path.dirname(os.path.join(self.save_dir, f"{iteration}", f"rendered_normals",image_name)), exist_ok=True)
-            save_path = os.path.join(self.save_dir, f"{iteration}", f"rendered_normals", f"{image_name}.npy")
-            normals = normals.float().detach().cpu().numpy()
-            np.save(save_path, normals)
-        if self.enable_save_rendered_alpha:
-            os.makedirs(os.path.dirname(os.path.join(self.save_dir, f"{iteration}", f"rendered_alpha",image_name)), exist_ok=True)
-            save_path = os.path.join(self.save_dir, f"{iteration}", f"rendered_alpha", f"{image_name}.npy")
-            alpha = alpha.float().detach().cpu().numpy()
-            np.save(save_path, alpha)
-        if self.enable_save_rendered_extra_attrs:
-            os.makedirs(os.path.dirname(os.path.join(self.save_dir, f"{iteration}", f"rendered_extra_attrs",image_name)), exist_ok=True)
-            save_path = os.path.join(self.save_dir, f"{iteration}", f"rendered_extra_attrs", f"{image_name}.npy")
-            extra_attrs = extra_attrs.float().detach().cpu().numpy()
-            np.save(save_path, extra_attrs)
+        self.output_saver.save(render_pkg, viewpoint_cam, iteration)
 
     def save_colmap(self, save_dir, save_image=False):
-        intrinsics = []
-        extrinsics = []
-        if save_image:
-            image_names = [cam.image_name for cam in self.cams]
-        else:
-            image_names = [cam.image_path for cam in self.cams]
-        os.makedirs(os.path.join(save_dir, "sparse/0"), exist_ok=True)
-        if save_image:
-            os.makedirs(os.path.join(save_dir, "images"), exist_ok=True)
-            print(f"Saving images to {os.path.join(save_dir, 'images')}")
-        for cam in self.cams:
-            intr = np.zeros((3, 3), dtype=np.float32)
-            intr[0, 0] = cam.focal_length_x
-            intr[1, 1] = cam.focal_length_y
-            intr[0, 2] = int(cam.image_width / 2)
-            intr[1, 2] = int(cam.image_height / 2)
-            intrinsics.append(intr)
-            extr = cam.world_view_transform.detach().cpu().transpose(0, 1).numpy()[:3, :4]
-            extrinsics.append(extr)
-            if save_image:
-                image = (cam.get_image_gt * 255).clamp(0, 255).byte().permute(1, 2, 0).cpu().numpy()
-                image = Image.fromarray(image)
-                image.save(os.path.join(save_dir, "images", f"{cam.image_name}"))
-        intrinsics = np.stack(intrinsics, axis=0)
-        extrinsics = np.stack(extrinsics, axis=0)
-        print(f"Saving COLMAP data to {save_dir}")
-        rec = batch_np_matrix_to_pycolmap_wo_track(
-            points3d=self.gaussians._xyz.detach().cpu().numpy(),
-            points_rgb=None,
-            extrinsics=extrinsics,
-            intrinsics=intrinsics,
-            image_names=image_names,
-            image_size=(self.cams[0].image_width, self.cams[0].image_height),
-            shared_camera=False,
-            camera_type="PINHOLE",
-        )
-        rec.write_text(os.path.join(save_dir, "sparse/0/"))
+        save_colmap_reconstruction(self.gaussians, self.cams, save_dir, save_image=save_image)

@@ -13,15 +13,23 @@ import os
 import sys
 from PIL import Image
 from typing import NamedTuple
-from scene.colmap_loader import read_extrinsics_text, read_intrinsics_text, qvec2rotmat, \
-    read_extrinsics_binary, read_intrinsics_binary, read_points3D_binary, read_points3D_text
-from utils.graphics_utils import getWorld2View, focal2fov, fov2focal
+
+try:
+    from .colmap_loader import read_extrinsics_text, read_intrinsics_text, qvec2rotmat, \
+        read_extrinsics_binary, read_intrinsics_binary, read_points3D_binary, read_points3D_text
+    from ..utils.graphics_utils import getWorld2View, focal2fov, fov2focal
+    from ..utils.sh_utils import SH2RGB
+    from .cameras import Camera
+except ImportError:
+    from scene.colmap_loader import read_extrinsics_text, read_intrinsics_text, qvec2rotmat, \
+        read_extrinsics_binary, read_intrinsics_binary, read_points3D_binary, read_points3D_text
+    from utils.graphics_utils import getWorld2View, focal2fov, fov2focal
+    from utils.sh_utils import SH2RGB
+    from scene.cameras import Camera
 import numpy as np
 import json
 from pathlib import Path
 from plyfile import PlyData, PlyElement
-from utils.sh_utils import SH2RGB
-from scene.cameras import Camera
 
 
 def getNerfppNorm(cam_info):
@@ -93,11 +101,15 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, Height, Width, images_fold
         if intr.model == "SIMPLE_PINHOLE":
             focal_length_x = intr.params[0] * scale_width
             focal_length_y = focal_length_x * scale_height
+            principal_point_x = intr.params[1] * scale_width
+            principal_point_y = intr.params[2] * scale_height
             FovY = focal2fov(focal_length_y, height)
             FovX = focal2fov(focal_length_x, width)
         elif intr.model == "PINHOLE":
             focal_length_x = intr.params[0] * scale_width
             focal_length_y = intr.params[1] * scale_height
+            principal_point_x = intr.params[2] * scale_width
+            principal_point_y = intr.params[3] * scale_height
             FovY = focal2fov(focal_length_y, height)
             FovX = focal2fov(focal_length_x, width)
         else:
@@ -106,7 +118,8 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, Height, Width, images_fold
         cam_info = Camera(idx=idx, R=R, T=T, FoVx=FovX, FoVy=FovY, focal_length_x=focal_length_x,
                           focal_length_y=focal_length_y, height=height, width=width, image=image, depth=depth,
                           normal=normal, alpha=alpha, extra_attrs=extra_attrs,
-                          image_path=image_path, image_name=image_name, preload=preload)
+                          image_path=image_path, image_name=image_name, preload=preload,
+                          principal_point_x=principal_point_x, principal_point_y=principal_point_y)
         cam_infos.append(cam_info)
 
     sys.stdout.write('\n')
@@ -156,13 +169,16 @@ def readCameras(cam_extrinsics, cam_intrinsics, Height, Width, images):
 
         focal_length_x = intr[0, 0] * scale_width
         focal_length_y = intr[1, 1] * scale_height
+        principal_point_x = intr[0, 2] * scale_width
+        principal_point_y = intr[1, 2] * scale_height
         FovX = focal2fov(focal_length_x, width)
         FovY = focal2fov(focal_length_y, height)
         image = to_tensor(image)
         cam_info = Camera(idx=idx, R=R, T=T, FoVx=FovX, FoVy=FovY, focal_length_x=focal_length_x,
                           focal_length_y=focal_length_y, height=height, width=width, image=image, depth=None,
                           normal=None, alpha=None, extra_attrs=None,
-                          image_path=image_path, image_name=image_name, preload=True)
+                          image_path=image_path, image_name=image_name, preload=True,
+                          principal_point_x=principal_point_x, principal_point_y=principal_point_y)
         cam_infos.append(cam_info)
 
     sys.stdout.write('\n')

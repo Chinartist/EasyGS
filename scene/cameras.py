@@ -12,7 +12,11 @@
 import torch
 from torch import nn
 import numpy as np
-from utils.graphics_utils import getWorld2View, getProjectionMatrix
+
+try:
+    from ..utils.graphics_utils import getWorld2View, getProjectionMatrix
+except ImportError:
+    from utils.graphics_utils import getWorld2View, getProjectionMatrix
 import cv2
 from PIL import Image
 from torchvision.transforms.functional import to_tensor, resize
@@ -57,7 +61,8 @@ class Camera(nn.Module):
     def __init__(self, idx, R, T, FoVx, FoVy, focal_length_x, focal_length_y, height, width, image, depth, normal,
                  alpha, extra_attrs,
                  image_path,
-                 image_name, preload=True
+                 image_name, preload=True,
+                 principal_point_x=None, principal_point_y=None,
                  ):
         super(Camera, self).__init__()
 
@@ -68,6 +73,8 @@ class Camera(nn.Module):
         self.FoVy = FoVy
         self.focal_length_x = focal_length_x
         self.focal_length_y = focal_length_y
+        self.principal_point_x = width / 2 if principal_point_x is None else principal_point_x
+        self.principal_point_y = height / 2 if principal_point_y is None else principal_point_y
         self.image_name = image_name
         self.image_path = image_path
         self.delta_t = torch.tensor([0, 0, 0], dtype=torch.float32).cuda()
